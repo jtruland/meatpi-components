@@ -64,7 +64,7 @@ typedef struct
     uint32_t delay_ms;       /* LOW_VOLTAGE countdown                  */
     bool     periodic;
     uint32_t interval_ms;    /* periodic check-in while SLEEPING       */
-    bool     motion_wake;    /* v5 (bitz): IMU motion wakes / holds awake */
+    bool     motion_wake;    /* bitz: IMU motion wakes / holds awake */
     float    motion_g;       /* per-axis delta between naps that counts */
 } sm_cfg_t;
 
