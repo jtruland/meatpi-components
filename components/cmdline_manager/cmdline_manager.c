@@ -172,6 +172,11 @@ esp_err_t cmdline_manager_exec_line(const char *line,
     {
         cmdline_printf("command failed (%d)\n", ret);
     }
+    else if (err != ESP_OK)
+    {
+        /* anything else (e.g. ESP_ERR_NO_MEM) used to vanish silently */
+        cmdline_printf("command error: %s\n", esp_err_to_name(err));
+    }
 
     if (out != NULL)
     {

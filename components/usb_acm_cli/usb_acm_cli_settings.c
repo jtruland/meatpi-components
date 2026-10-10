@@ -33,7 +33,10 @@
 
 static const settings_field_t FIELDS[] =
 {
-    SETTINGS_BOOL("enabled", false),
+    /* bitz fork: default ON so a USB GPS (u-blox 7 / VK-162) feeds the
+       fix to HA with no setup; the RX task only starts once a CDC-ACM
+       device actually attaches, so this costs nothing without one */
+    SETTINGS_BOOL("enabled", true),
     SETTINGS_BOOL("cli", true),
 };
 
