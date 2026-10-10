@@ -48,6 +48,7 @@ static const char *state_str(vpn_state_t st)
         case VPN_STATE_WAITING:    return "waiting";
         case VPN_STATE_CONNECTING: return "connecting";
         case VPN_STATE_CONNECTED:  return "connected";
+        case VPN_STATE_PAUSED_HOME: return "paused_home";
         default:                   return "disabled";
     }
 }

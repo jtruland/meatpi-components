@@ -36,15 +36,18 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "lwip/def.h"
 
 #include "dev_status_manager.h"
 #include "log_manager.h"
 #include "rtc_manager.h"
 
 #include "vpn_manager_private.h"
+#include "vpn_route_hook.h"
 
 static const char *TAG = "vpn_manager";
 
@@ -66,6 +69,11 @@ static TaskHandle_t s_task;
 
 static vpn_manager_status_t s_status;
 static uint32_t s_up_since_ms;
+
+/* split-tunnel (bitz fork): the tunnel netif the route hook hands out,
+ * published only while CONNECTED with routes configured. Read lock-free on
+ * the tcpip thread; cleared BEFORE the tunnel is torn down. */
+static struct netif *volatile s_route_netif;
 
 /* DNS override bookkeeping */
 static esp_netif_dns_info_t s_saved_dns;
@@ -132,6 +140,39 @@ static bool network_up(void)
             DEV_STATUS_NETWORK_CONNECTED_MASK) != 0;
 }
 
+/* home-Wi-Fi pause (bitz fork, v4 commit 5cc581d): the station is
+ * associated to a trusted SSID. Authenticated by the WPA association itself
+ * (we only join networks we hold credentials for); a subnet match was
+ * rejected because 192.168.86.0/24 is a router factory default. */
+static bool home_paused(void)
+{
+    const vpn_config_t *cfg = vpn_settings_config();
+    wifi_ap_record_t ap;
+
+    if (!cfg->home_bypass || esp_wifi_sta_get_ap_info(&ap) != ESP_OK)
+    {
+        return false;
+    }
+
+    return vpn_ssid_in_list((const char *)ap.ssid, cfg->home_ssids);
+}
+
+struct netif *vpn_manager_route_netif(const ip4_addr_t *dest)
+{
+    struct netif *wg = s_route_netif;
+
+    if (wg == NULL)
+    {
+        return NULL;
+    }
+
+    const vpn_config_t *cfg = vpn_settings_config();
+
+    return vpn_route_match(cfg->route, cfg->route_count,
+                           lwip_ntohl(ip4_addr_get_u32(dest)))
+               ? wg : NULL;
+}
+
 static void enter_connected(void)
 {
     const vpn_config_t *cfg = vpn_settings_config();
@@ -151,6 +192,12 @@ static void enter_connected(void)
         {
             (void)vpn_wg_set_default_route();
         }
+        else if (cfg->route_count > 0)
+        {
+            s_route_netif = vpn_wg_netif();
+            ESP_LOGI(TAG, "split tunnel: %d route(s) via WireGuard (%s)",
+                     cfg->route_count, cfg->routes);
+        }
     }
 
     vpn_events_state(true);
@@ -159,6 +206,8 @@ static void enter_connected(void)
 
 static void teardown(bool was_connected)
 {
+    s_route_netif = NULL; /* the hook stops handing it out first */
+
     if (vpn_settings_config()->tailscale)
     {
         vpn_ts_down();
@@ -212,6 +261,19 @@ static void state_task(void *arg)
             continue;
         }
 
+        /* ---- PAUSED_HOME (bitz fork): on a trusted home SSID */
+        if (network_up() && home_paused())
+        {
+            if (s_status.state != VPN_STATE_PAUSED_HOME)
+            {
+                ESP_LOGI(TAG, "on a home Wi-Fi SSID; tunnel paused");
+            }
+
+            s_status.state = VPN_STATE_PAUSED_HOME;
+            vTaskDelay(pdMS_TO_TICKS(VPN_POLL_MS * 5));
+            continue;
+        }
+
         /* ---- WAITING: uplink + a sane clock (WG handshake needs it) */
         s_status.state = VPN_STATE_WAITING;
 
@@ -257,7 +319,7 @@ static void state_task(void *arg)
 
         for (int i = 0; i < budget_s && s_run; i++)
         {
-            if (!network_up())
+            if (!network_up() || home_paused())
             {
                 break;
             }
@@ -293,7 +355,7 @@ static void state_task(void *arg)
 
         uint32_t silent_s = 0;
 
-        while (s_run && network_up())
+        while (s_run && network_up() && !home_paused())
         {
             vTaskDelay(pdMS_TO_TICKS(VPN_POLL_MS));
 

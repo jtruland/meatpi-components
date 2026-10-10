@@ -17,5 +17,5 @@ idf_component_register(
     PRIV_REQUIRES esp_wireguard wireguard_lwip microlink esp_netif lwip mbedtls esp_hw_support
                   dev_status_manager rtc_manager event_manager
                   http_server_manager settings_manager log_manager
-                  cmdline_manager
+                  cmdline_manager esp_wifi
 )

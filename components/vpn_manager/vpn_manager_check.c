@@ -26,6 +26,8 @@
  *        esp_err.h). The settings on_validate speaks through
  *        vpn_check_config so the UI gets a reason, not just a 400.
  */
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "vpn_manager_private.h"
@@ -147,5 +149,196 @@ const char *vpn_check_config(const vpn_config_t *cfg)
         return "address (local tunnel IP) is required";
     }
 
+    vpn_route_t r[VPN_MAX_ROUTES];
+
+    if (vpn_parse_routes(cfg->routes, r, VPN_MAX_ROUTES) < 0)
+    {
+        return "routes must be up to 8 comma-separated IPv4 CIDRs "
+               "(e.g. 192.168.86.0/24, 10.200.0.0/24)";
+    }
+
+    if (cfg->home_bypass && cfg->home_ssids[0] == '\0')
+    {
+        return "home_ssids is required when home_bypass is on";
+    }
+
     return NULL;
+}
+
+/* ---- bitz fork: split-tunnel routes + home SSIDs -------------------------- */
+
+/* "a.b.c.d" -> host-order u32; strict: four 0..255 decimal octets */
+static bool parse_ipv4(const char *s, size_t len, uint32_t *out)
+{
+    uint32_t v = 0;
+    int octets = 0;
+    size_t i = 0;
+
+    while (octets < 4)
+    {
+        if (i >= len || !isdigit((unsigned char)s[i]))
+        {
+            return false;
+        }
+
+        int o = 0;
+        int digits = 0;
+
+        while (i < len && isdigit((unsigned char)s[i]) && digits < 4)
+        {
+            o = o * 10 + (s[i++] - '0');
+            digits++;
+        }
+
+        if (o > 255 || digits > 3)
+        {
+            return false;
+        }
+
+        v = (v << 8) | (uint32_t)o;
+
+        if (++octets < 4)
+        {
+            if (i >= len || s[i] != '.')
+            {
+                return false;
+            }
+
+            i++;
+        }
+    }
+
+    *out = v;
+    return i == len;
+}
+
+static void trim(const char **b, const char **e)
+{
+    while (*b < *e && isspace((unsigned char)**b))
+    {
+        (*b)++;
+    }
+
+    while (*e > *b && isspace((unsigned char)(*e)[-1]))
+    {
+        (*e)--;
+    }
+}
+
+int vpn_parse_routes(const char *list, vpn_route_t *out, int max)
+{
+    int n = 0;
+
+    if (list == NULL)
+    {
+        return 0;
+    }
+
+    const char *p = list;
+
+    while (*p != '\0')
+    {
+        const char *end = strchr(p, ',');
+
+        if (end == NULL)
+        {
+            end = p + strlen(p);
+        }
+
+        const char *b = p;
+        const char *e = end;
+
+        trim(&b, &e);
+
+        if (b < e)
+        {
+            const char *slash = memchr(b, '/', (size_t)(e - b));
+            int bits = 32;
+            uint32_t ip;
+
+            if (slash != NULL)
+            {
+                char *num_end = NULL;
+                char buf[4] = { 0 };
+                size_t nl = (size_t)(e - slash - 1);
+
+                if (nl < 1 || nl > 2)
+                {
+                    return -1;
+                }
+
+                memcpy(buf, slash + 1, nl);
+                bits = (int)strtol(buf, &num_end, 10);
+
+                if (*num_end != '\0' || bits < 0 || bits > 32)
+                {
+                    return -1;
+                }
+            }
+
+            if (!parse_ipv4(b, (size_t)((slash ? slash : e) - b), &ip) ||
+                n >= max)
+            {
+                return -1;
+            }
+
+            uint32_t mask = bits == 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
+
+            out[n].net = ip & mask;
+            out[n].mask = mask;
+            n++;
+        }
+
+        p = (*end == ',') ? end + 1 : end;
+    }
+
+    return n;
+}
+
+bool vpn_route_match(const vpn_route_t *r, int n, uint32_t dest)
+{
+    for (int i = 0; i < n; i++)
+    {
+        if ((dest & r[i].mask) == r[i].net)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool vpn_ssid_in_list(const char *ssid, const char *list)
+{
+    if (ssid == NULL || ssid[0] == '\0' || list == NULL)
+    {
+        return false;
+    }
+
+    size_t sl = strlen(ssid);
+    const char *p = list;
+
+    while (*p != '\0')
+    {
+        const char *end = strchr(p, ',');
+
+        if (end == NULL)
+        {
+            end = p + strlen(p);
+        }
+
+        const char *b = p;
+        const char *e = end;
+
+        trim(&b, &e);
+
+        if ((size_t)(e - b) == sl && memcmp(b, ssid, sl) == 0)
+        {
+            return true;
+        }
+
+        p = (*end == ',') ? end + 1 : end;
+    }
+
+    return false;
 }

@@ -53,6 +53,14 @@ static const settings_field_t FIELDS[] =
     SETTINGS_INT("keepalive_s", 0, 3600, 25),
     SETTINGS_BOOL("default_route", false),
     SETTINGS_STR("dns", 15, ""),
+    /* v2 (bitz fork): real split-tunnel routing and the home-Wi-Fi pause.
+       routes = the destination CIDRs that go over WireGuard (an lwIP route
+       hook, see vpn_route_hook.h); "" keeps the upstream behaviour (the
+       AllowedIPs netmask on the tunnel netif). home_bypass holds the tunnel
+       down while the station is associated to one of home_ssids. */
+    SETTINGS_STR("routes", 191, ""),
+    SETTINGS_BOOL("home_bypass", false),
+    SETTINGS_STR("home_ssids", 127, ""),
     SETTINGS_BOOL("cli", true),
 };
 
@@ -119,6 +127,17 @@ static void config_from_json(const cJSON *settings, vpn_config_t *cfg)
     cfg->default_route = cJSON_IsTrue(
         cJSON_GetObjectItemCaseSensitive(settings, "default_route"));
     field_str(settings, "dns", cfg->dns, sizeof(cfg->dns));
+    field_str(settings, "routes", cfg->routes, sizeof(cfg->routes));
+    cfg->route_count = vpn_parse_routes(cfg->routes, cfg->route,
+                                        VPN_MAX_ROUTES);
+    if (cfg->route_count < 0)
+    {
+        cfg->route_count = 0; /* on_validate rejects it before storing */
+    }
+    cfg->home_bypass = cJSON_IsTrue(
+        cJSON_GetObjectItemCaseSensitive(settings, "home_bypass"));
+    field_str(settings, "home_ssids", cfg->home_ssids,
+              sizeof(cfg->home_ssids));
 }
 
 static esp_err_t on_validate(const cJSON *settings, char *err,
@@ -174,7 +193,10 @@ esp_err_t vpn_settings_register(void)
     static const settings_descriptor_t DESC =
     {
         .name = "vpn_manager",
-        .version = 1,
+        .version = 1, /* bitz fork adds routes/home_bypass/home_ssids as
+                         non-breaking additions (filled from the defaults).
+                         NOT a bump: a bump without on_migrate resets the
+                         component to defaults, wiping the WireGuard keys */
         .fields = FIELDS,
         .field_count = sizeof(FIELDS) / sizeof(FIELDS[0]),
         .on_apply = on_apply,

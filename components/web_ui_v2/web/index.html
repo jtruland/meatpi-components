@@ -1190,6 +1190,7 @@ const LABELS={
   private_key:"Private key",peer_public_key:"Peer public key",preshared_key:"Pre-shared key",address:"Tunnel address",
   allowed_ip:"Allowed IPs",allowed_ip_mask:"Allowed IPs mask",endpoint:"Endpoint host","vpn_manager.port":"Endpoint port",
   default_route:"Route all traffic through the VPN",dns:"DNS server",
+  routes:"Split-tunnel routes",home_bypass:"Pause on home Wi-Fi",home_ssids:"Home Wi-Fi SSIDs",
   /* j2534_server / script_engine / uds_manager */
   "j2534_server.port":"TCP port",allow_reflash:"Allow ECU flashing",allow_lan:"Expose on LAN",
   max_runtime_ms:"Max script runtime (ms)","script_engine.enabled":"Scripting","uds_manager.backend":"Transport",p2_ms:"P2 timeout (ms)",p2star_ms:"P2* timeout (ms)",
@@ -1253,6 +1254,9 @@ const HELP={
   prefer_usb_route:"Use the USB-Ethernet uplink even when WiFi is connected.",
   "vpn_manager.type":"WireGuard: point-to-point tunnel to your own server. Tailscale: zero-config mesh (needs an auth key).",
   default_route:"Send all internet traffic through the tunnel, not only the allowed IPs.",
+  routes:"Comma-separated destination CIDRs sent over WireGuard, e.g. 192.168.86.0/24, 10.200.0.0/24. Everything else (webhooks, NTP) keeps the normal uplink. Empty = tunnel subnet only.",
+  home_bypass:"Hold the tunnel down while connected to one of the home SSIDs below.",
+  home_ssids:"Comma-separated, exact and case-sensitive.",
   allow_reflash:"Lets a connected tool write ECU firmware. Keep off unless you are flashing.",
   allow_lan:"Reachable from any network the WiCAN is on, not only its own AP / USB link.",
   silent:"Receive only: the WiCAN never acknowledges frames on the bus.",
@@ -1526,6 +1530,8 @@ function importWgConf(text,vals){
   if(allowed.length){
     const full=allowed.includes("0.0.0.0/0");
     vals.default_route=full;
+    /* bitz: every non-default CIDR becomes a split-tunnel route */
+    if(!full)vals.routes=allowed.join(", ");
     const cidr=allowed.find(a=>a!=="0.0.0.0/0");
     if(cidr){const[ip,bits]=cidr.split("/");vals.allowed_ip=ip;
       if(bits!==undefined){const b=Number(bits);
@@ -3847,7 +3853,7 @@ PAGES.vpn=async(view)=>{
   const dbgRows=h("div",{});
   async function status(){const v=await tryGet("/api/vpn");if(!v)return;
     badge.className="chip "+(v.state==="connected"?"ok":v.state==="disabled"?"":"warn");
-    badge.replaceChildren(h("span",{class:"d"}),v.state==="connected"?"Connected":(v.state||"disabled"));
+    badge.replaceChildren(h("span",{class:"d"}),v.state==="connected"?"Connected":v.state==="paused_home"?"Paused (home Wi-Fi)":(v.state||"disabled"));
     dbgRows.replaceChildren(kv([
       ["Type",v.type||"-"],["State",v.state||"-"],["Endpoint",(v.endpoint&&!/^:\d*$/.test(v.endpoint))?v.endpoint:"-"],
       ["Tailscale IP",v.ts_ip||"-"],["Peers",v.ts_peers],["Connects",v.connects],
@@ -3857,7 +3863,7 @@ PAGES.vpn=async(view)=>{
     const vals=await api("/api/settings/vpn_manager");
     const schema=await api("/api/settings/vpn_manager/schema");
     delete vals.degraded;delete vals.pending_reboot;
-    const WG=["private_key","peer_public_key","preshared_key","address","allowed_ip","allowed_ip_mask","endpoint","port","keepalive_s","default_route","dns"];
+    const WG=["private_key","peer_public_key","preshared_key","address","allowed_ip","allowed_ip_mask","endpoint","port","keepalive_s","default_route","dns","routes","home_bypass","home_ssids"];
     const TS=["ts_auth_key","ts_device_name","ts_control_url"];
     const keyOut=h("div",{class:"help mono",style:"display:none;word-break:break-all;margin-top:6px"});
     const keyRow=h("div",{class:"frow"},h("label",{},"Key Pair"),h("div",{class:"ctl"},

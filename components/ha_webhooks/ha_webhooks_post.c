@@ -231,7 +231,7 @@ static cJSON *build_status(void)
     if (vpn_manager_status(&vs) == ESP_OK)
     {
         static const char *VPN_STATES[] =
-        { "disabled", "waiting", "connecting", "connected" };
+        { "disabled", "waiting", "connecting", "connected", "paused_home" };
 
         cJSON_AddStringToObject(s, "vpn_status", VPN_STATES[vs.state]);
 

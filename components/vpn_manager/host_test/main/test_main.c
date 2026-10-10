@@ -3,7 +3,9 @@
  * @brief Host tests for vpn_manager's pure config checks: WireGuard
  *        key shape, endpoint sanity, the enabled-config ladder, and
  *        the tailscale validation branch.
- *        Expected output: 8 Tests 0 Failures 0 Ignored.
+ *        Plus the bitz fork split-tunnel route parser and the home-SSID
+ *        list match.
+ *        Expected output: 12 Tests 0 Failures 0 Ignored.
  */
 #include <string.h>
 
@@ -158,6 +160,67 @@ static void test_tailscale_rejects(void)
     TEST_ASSERT_NULL(vpn_check_config(&s_cfg));
 }
 
+/* ---- bitz fork: split-tunnel routes + home SSIDs ---- */
+
+static void test_routes_parse(void)
+{
+    vpn_route_t r[VPN_MAX_ROUTES];
+
+    TEST_ASSERT_EQUAL_INT(0, vpn_parse_routes("", r, VPN_MAX_ROUTES));
+    TEST_ASSERT_EQUAL_INT(0, vpn_parse_routes(" , ", r, VPN_MAX_ROUTES));
+    TEST_ASSERT_EQUAL_INT(2, vpn_parse_routes(
+        " 192.168.86.0/24 ,10.200.0.1/24", r, VPN_MAX_ROUTES));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A85600, r[0].net);
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFF00, r[0].mask);
+    TEST_ASSERT_EQUAL_HEX32(0x0AC80000, r[1].net); /* host bits dropped */
+
+    TEST_ASSERT_TRUE(vpn_route_match(r, 2, 0xC0A85609));   /* .86.9  */
+    TEST_ASSERT_TRUE(vpn_route_match(r, 2, 0x0AC80001));   /* 10.200.0.1 */
+    TEST_ASSERT_FALSE(vpn_route_match(r, 2, 0x68150390)); /* public */
+
+    /* a bare address is a /32; /0 matches everything */
+    TEST_ASSERT_EQUAL_INT(1, vpn_parse_routes("1.2.3.4", r, VPN_MAX_ROUTES));
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFF, r[0].mask);
+    TEST_ASSERT_EQUAL_INT(1, vpn_parse_routes("0.0.0.0/0", r, VPN_MAX_ROUTES));
+    TEST_ASSERT_TRUE(vpn_route_match(r, 1, 0x08080808));
+}
+
+static void test_routes_reject(void)
+{
+    vpn_route_t r[2];
+
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("192.168.86/24", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("192.168.86.0/33", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("256.1.1.1", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("10.0.0.0/", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("10.0.0.0/8x", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("fd00::/8", r, 2));
+    TEST_ASSERT_EQUAL_INT(-1, vpn_parse_routes("1.1.1.1,2.2.2.2,3.3.3.3", r, 2));
+}
+
+static void test_routes_in_config_check(void)
+{
+    strcpy(s_cfg.routes, "192.168.86.0/24, 10.200.0.0/24");
+    TEST_ASSERT_NULL(vpn_check_config(&s_cfg));
+    strcpy(s_cfg.routes, "192.168.86.0/24, bogus");
+    TEST_ASSERT_NOT_NULL(vpn_check_config(&s_cfg));
+    s_cfg.routes[0] = '\0';
+    s_cfg.home_bypass = true;
+    TEST_ASSERT_NOT_NULL(vpn_check_config(&s_cfg)); /* needs SSIDs */
+    strcpy(s_cfg.home_ssids, "Bitztead");
+    TEST_ASSERT_NULL(vpn_check_config(&s_cfg));
+}
+
+static void test_ssid_list(void)
+{
+    TEST_ASSERT_TRUE(vpn_ssid_in_list("Bitztead", "Bitztead"));
+    TEST_ASSERT_TRUE(vpn_ssid_in_list("Bitz IoT", " Bitztead , Bitz IoT "));
+    TEST_ASSERT_FALSE(vpn_ssid_in_list("bitztead", "Bitztead"));
+    TEST_ASSERT_FALSE(vpn_ssid_in_list("Bitz", "Bitztead"));
+    TEST_ASSERT_FALSE(vpn_ssid_in_list("", "Bitztead,"));
+    TEST_ASSERT_FALSE(vpn_ssid_in_list("Bitztead", ""));
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -169,5 +232,9 @@ void app_main(void)
     RUN_TEST(test_enabled_config_requires_endpoint_and_address);
     RUN_TEST(test_tailscale_valid_configs);
     RUN_TEST(test_tailscale_rejects);
+    RUN_TEST(test_routes_parse);
+    RUN_TEST(test_routes_reject);
+    RUN_TEST(test_routes_in_config_check);
+    RUN_TEST(test_ssid_list);
     UNITY_END();
 }

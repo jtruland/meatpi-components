@@ -29,10 +29,19 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
 #include "vpn_manager.h"
+
+/* split-tunnel route (bitz fork): HOST byte order, mask as bits */
+#define VPN_MAX_ROUTES 8
+typedef struct
+{
+    uint32_t net;
+    uint32_t mask;
+} vpn_route_t;
 
 /* boot-applied configuration (strings sized to the settings schema) */
 typedef struct
@@ -50,6 +59,12 @@ typedef struct
     int  keepalive_s;
     bool default_route;
     char dns[16];              /* optional override, "" = off        */
+    /* bitz fork (settings v2) */
+    char routes[192];          /* "a.b.c.d/n, ..." split-tunnel CIDRs */
+    vpn_route_t route[VPN_MAX_ROUTES];
+    int  route_count;          /* parsed from routes; 0 = upstream mode */
+    bool home_bypass;          /* pause the tunnel on a home SSID     */
+    char home_ssids[128];      /* comma-separated, exact match        */
     /* tailscale (microlink) */
     char ts_auth_key[96];      /* SECRET (auth_key redaction suffix) */
     char ts_device_name[48];   /* "" = wican_<device_id>             */
@@ -67,12 +82,23 @@ bool vpn_check_endpoint(const char *host);
  * human-readable reason (the settings on_validate message) */
 const char *vpn_check_config(const vpn_config_t *cfg);
 
+/* bitz fork. Parse "192.168.86.0/24, 10.200.0.0/24" (a bare address is a
+ * /32) into @p out; returns the count, or -1 when any entry is malformed or
+ * there are more than @p max. Empty/NULL = 0. */
+int vpn_parse_routes(const char *list, vpn_route_t *out, int max);
+/* @p dest (host byte order) falls inside one of the routes */
+bool vpn_route_match(const vpn_route_t *r, int n, uint32_t dest);
+/* @p ssid is exactly one of the comma-separated entries (each trimmed);
+ * SSIDs are case-sensitive. Empty ssid never matches. */
+bool vpn_ssid_in_list(const char *ssid, const char *list);
+
 /* ---- vpn_manager_wg.c: esp_wireguard glue (state task ONLY) ------------- */
 
 esp_err_t vpn_wg_up(const vpn_config_t *cfg);   /* init + connect      */
 void      vpn_wg_down(void);                    /* disconnect + reset  */
 bool      vpn_wg_peer_up(void);
 esp_err_t vpn_wg_set_default_route(void);
+struct netif *vpn_wg_netif(void);               /* NULL when down      */
 
 /* ---- vpn_manager_ts.c: tailscale/microlink glue (state task ONLY) ------- */
 

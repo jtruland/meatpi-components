@@ -63,6 +63,7 @@ typedef enum
     VPN_STATE_WAITING,       /**< enabled; waiting for network/time   */
     VPN_STATE_CONNECTING,    /**< tunnel up, no verified handshake yet */
     VPN_STATE_CONNECTED,     /**< peer handshake verified             */
+    VPN_STATE_PAUSED_HOME,   /**< bitz: on a home SSID, tunnel held down */
 } vpn_state_t;
 
 typedef struct

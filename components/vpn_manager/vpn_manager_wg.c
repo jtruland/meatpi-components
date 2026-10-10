@@ -223,3 +223,8 @@ esp_err_t vpn_wg_set_default_route(void)
 
     return esp_wireguard_set_default(&s_ctx);
 }
+
+struct netif *vpn_wg_netif(void)
+{
+    return (s_ctx.config != NULL) ? s_ctx.netif : NULL;
+}
