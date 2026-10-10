@@ -31,6 +31,8 @@
  *        surfaces report (2026-10-06): which of the two puts the device
  *        to sleep first, and when.
  */
+#include <math.h>
+
 #include "sleep_manager_private.h"
 
 bool sm_resolve_thresholds(int sleep_mv, int wake_mv,
@@ -263,4 +265,39 @@ sm_action_t sm_policy_eval(sm_policy_t *p, const sm_cfg_t *cfg,
     }
 
     return SM_ACT_NONE;
+}
+
+/* ---- motion (bitz fork) ---------------------------------------------------- */
+
+bool sm_motion_moved(const float prev[3], const float cur[3], float limit_g)
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (fabsf(cur[i] - prev[i]) > limit_g)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool sm_motion_wake_due(const sm_policy_t *p, const sm_cfg_t *cfg,
+                        float volts, bool moved)
+{
+    return cfg->motion_wake && moved &&
+           p->state == SLEEP_MANAGER_SLEEPING && volts > SM_CRITICAL_V;
+}
+
+bool sm_motion_hold(sm_policy_t *p, const sm_cfg_t *cfg, bool active,
+                    uint32_t now_ms)
+{
+    if (!cfg->motion_wake || !active ||
+        p->state != SLEEP_MANAGER_LOW_VOLTAGE)
+    {
+        return false;
+    }
+
+    p->t_low = now_ms + cfg->delay_ms; /* the delay starts over at rest */
+    return true;
 }

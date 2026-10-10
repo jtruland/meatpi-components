@@ -11,7 +11,8 @@
  *        many seconds, through the one word a status read unpacks; and
  *        the hold (same day): ten more minutes on request, on both
  *        deadlines.
- *        Expected output: 23 Tests 0 Failures 0 Ignored.
+ *        Plus motion wake / hold (bitz fork).
+ *        Expected output: 26 Tests 0 Failures 0 Ignored.
  */
 #include "unity.h"
 
@@ -29,6 +30,8 @@ void setUp(void)
     s_cfg.delay_ms = 180000;
     s_cfg.periodic = false;
     s_cfg.interval_ms = 1800000;
+    s_cfg.motion_wake = true;
+    s_cfg.motion_g = 0.125f;
     sm_policy_init(&s_p);
 }
 
@@ -538,6 +541,62 @@ static void test_pending_word_is_exact_at_the_read(void)
     TEST_ASSERT_EQUAL_UINT32(0, s);
 }
 
+/* ---- motion (bitz fork) ---- */
+
+static void test_motion_moved_threshold(void)
+{
+    const float rest[3] = { 0.01f, -0.02f, 1.00f };
+    const float still[3] = { 0.05f, -0.06f, 0.98f };   /* noise */
+    const float bump[3] = { 0.01f, 0.20f, 1.00f };     /* 220 mg on y */
+
+    TEST_ASSERT_FALSE(sm_motion_moved(rest, still, 0.125f));
+    TEST_ASSERT_TRUE(sm_motion_moved(rest, bump, 0.125f));
+    TEST_ASSERT_FALSE(sm_motion_moved(rest, bump, 0.5f));
+}
+
+static void test_motion_wake_gated(void)
+{
+    s_p.state = SLEEP_MANAGER_SLEEPING;
+    TEST_ASSERT_TRUE(sm_motion_wake_due(&s_p, &s_cfg, 12.4f, true));
+    TEST_ASSERT_FALSE(sm_motion_wake_due(&s_p, &s_cfg, 12.4f, false));
+    /* a flat battery is never woken by a bump */
+    TEST_ASSERT_FALSE(sm_motion_wake_due(&s_p, &s_cfg, 11.5f, true));
+    s_cfg.motion_wake = false;
+    TEST_ASSERT_FALSE(sm_motion_wake_due(&s_p, &s_cfg, 12.4f, true));
+    s_cfg.motion_wake = true;
+    s_p.state = SLEEP_MANAGER_LOW_VOLTAGE; /* awake: not a wake */
+    TEST_ASSERT_FALSE(sm_motion_wake_due(&s_p, &s_cfg, 12.4f, true));
+}
+
+static void test_motion_holds_the_countdown(void)
+{
+    /* regulated alternator: 12.9 V while driving, under sleep_v */
+    TEST_ASSERT_EQUAL_INT(SM_ACT_NONE,
+                          sm_policy_eval(&s_p, &s_cfg, 12.9f, 1000));
+    TEST_ASSERT_EQUAL_INT(SLEEP_MANAGER_LOW_VOLTAGE, s_p.state);
+
+    /* moving for 10 min: the delay keeps starting over */
+    for (uint32_t t = 2000; t < 600000; t += 1000)
+    {
+        TEST_ASSERT_TRUE(sm_motion_hold(&s_p, &s_cfg, true, t));
+        TEST_ASSERT_EQUAL_INT(SM_ACT_NONE,
+                              sm_policy_eval(&s_p, &s_cfg, 12.9f, t));
+    }
+
+    /* parked: the full delay runs from the last motion */
+    TEST_ASSERT_FALSE(sm_motion_hold(&s_p, &s_cfg, false, 600000));
+    TEST_ASSERT_EQUAL_INT(SM_ACT_NONE,
+                          sm_policy_eval(&s_p, &s_cfg, 12.4f, 599000 + 179999));
+    TEST_ASSERT_EQUAL_INT(SM_ACT_ENTER_SLEEP,
+                          sm_policy_eval(&s_p, &s_cfg, 12.4f, 599000 + 180000));
+
+    /* disabled: no hold */
+    sm_policy_init(&s_p);
+    s_cfg.motion_wake = false;
+    (void)sm_policy_eval(&s_p, &s_cfg, 12.9f, 1000);
+    TEST_ASSERT_FALSE(sm_motion_hold(&s_p, &s_cfg, true, 2000));
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -564,5 +623,8 @@ void app_main(void)
     RUN_TEST(test_hold_moves_both_deadlines);
     RUN_TEST(test_hold_only_what_counts);
     RUN_TEST(test_hold_clock_wrap_safe);
+    RUN_TEST(test_motion_moved_threshold);
+    RUN_TEST(test_motion_wake_gated);
+    RUN_TEST(test_motion_holds_the_countdown);
     UNITY_END();
 }
