@@ -35,6 +35,7 @@
 #include "freertos/task.h"
 
 #include "dev_status_manager.h" /* backup metadata: device id */
+#include "filesystem.h"         /* bitz: AutoPID files in the backup */
 #include "http_server_manager.h"
 #include "log_manager.h"
 #include "restart_tracker.h"
@@ -45,7 +46,8 @@
 static const char *TAG = "api_http";
 
 #define API_PUT_BODY_MAX     8192  /* settings objects are well under this */
-#define API_BACKUP_BODY_MAX 32768  /* a whole-device backup document       */
+#define API_BACKUP_BODY_MAX (256 * 1024) /* whole-device backup incl. the
+                                           AutoPID files (bitz); PSRAM */
 
 /* ---- shared helpers ---------------------------------------------------------- */
 
@@ -338,6 +340,73 @@ static esp_err_t settings_submit_handler(httpd_req_t *req)
     return err;
 }
 
+/* ---- bitz fork: the AutoPID files ride along in the backup ------------------
+ * v4 fork d354c2b: "a backup that looks complete and is not is worse than
+ * none". settings_manager covers every component's settings, but AutoPID's
+ * PID tables and vehicle profiles live in files under /data/autopid, so a
+ * restored device came back with no PIDs. Export them as {path: text} and
+ * say outright in _meta what is still NOT in the file. */
+#define BK_AUTOPID_DIR  "/data/autopid"
+#define BK_VEH_DIR      BK_AUTOPID_DIR "/vehicles"
+#define BK_FILE_MAX     (64 * 1024)
+
+static void bk_add_file(cJSON *files, const char *path)
+{
+    size_t size = 0;
+
+    if (filesystem_size(path, &size) != ESP_OK || size > BK_FILE_MAX)
+    {
+        return;
+    }
+
+    char *buf = heap_caps_malloc(size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t got = 0;
+
+    if (buf != NULL && filesystem_read(path, buf, size + 1, &got) == ESP_OK)
+    {
+        buf[got] = '\0';
+        cJSON_AddStringToObject(files, path, buf);
+    }
+
+    free(buf);
+}
+
+static esp_err_t bk_vehicle_cb(const char *name, bool is_dir, size_t size,
+                               void *ctx)
+{
+    size_t n = strlen(name);
+
+    (void)size;
+
+    if (!is_dir && n > 5 && strcmp(name + n - 5, ".json") == 0)
+    {
+        char path[96];
+
+        snprintf(path, sizeof(path), BK_VEH_DIR "/%s", name);
+        bk_add_file((cJSON *)ctx, path);
+    }
+
+    return ESP_OK;
+}
+
+/* restore allowlist: the two AutoPID files, or one flat vehicles/<x>.json */
+static bool bk_path_ok(const char *p)
+{
+    static const char VEH[] = BK_VEH_DIR "/";
+    size_t n = strlen(p);
+
+    if (strcmp(p, BK_AUTOPID_DIR "/config.json") == 0 ||
+        strcmp(p, BK_AUTOPID_DIR "/vehicles.json") == 0)
+    {
+        return true;
+    }
+
+    return strncmp(p, VEH, sizeof(VEH) - 1) == 0 && n < 96 &&
+           n > sizeof(VEH) - 1 + 5 && strcmp(p + n - 5, ".json") == 0 &&
+           strchr(p + sizeof(VEH) - 1, '/') == NULL &&
+           strstr(p, "..") == NULL;
+}
+
 /* GET /api/settings/backup: the whole device configuration as ONE document
    (offline backup / device-to-device transfer). Values are NOT redacted:
    passwords ship verbatim, or the backup could not transfer a working
@@ -365,6 +434,30 @@ static esp_err_t settings_backup_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(doc, "device_id",
                             dev_status_manager_device_id());
     cJSON_AddItemToObject(doc, "components", comps);
+
+    /* bitz fork: the AutoPID files + an honest list of what is missing */
+    cJSON *files = cJSON_AddObjectToObject(doc, "files");
+
+    bk_add_file(files, BK_AUTOPID_DIR "/config.json");
+    bk_add_file(files, BK_AUTOPID_DIR "/vehicles.json");
+    (void)filesystem_list(BK_VEH_DIR, bk_vehicle_cb, files);
+
+    cJSON *meta = cJSON_AddObjectToObject(doc, "_meta");
+
+    cJSON_AddStringToObject(meta, "fw_version",
+                            dev_status_manager_app_version());
+    cJSON_AddNumberToObject(meta, "files", cJSON_GetArraySize(files));
+
+    cJSON *missing = cJSON_AddArrayToObject(meta, "not_included");
+
+    cJSON_AddItemToArray(missing, cJSON_CreateString(
+        "certificates (cert_manager): re-upload them"));
+    cJSON_AddItemToArray(missing, cJSON_CreateString(
+        "other /data files (scripts, DBC files): use the File Manager"));
+    cJSON_AddItemToArray(missing, cJSON_CreateString(
+        "the SD card"));
+    cJSON_AddItemToArray(missing, cJSON_CreateString(
+        "Tailscale node keys (NVS): the device re-registers"));
 
     /* hint browsers to save-as (value must outlive the send) */
     static char s_disp[64];
@@ -444,6 +537,25 @@ static esp_err_t settings_backup_post_handler(httpd_req_t *req)
         }
     }
 
+    /* bitz fork: the AutoPID files, checked in the same dry run */
+    const cJSON *files = cJSON_GetObjectItemCaseSensitive(doc, "files");
+
+    cJSON_ArrayForEach(item, files)
+    {
+        cJSON *parsed = cJSON_IsString(item) && bk_path_ok(item->string) &&
+                        strlen(item->valuestring) <= BK_FILE_MAX
+                            ? cJSON_Parse(item->valuestring) : NULL;
+
+        if (parsed == NULL)
+        {
+            cJSON_AddStringToObject(errors, item->string,
+                                    "file entry must be an allowed "
+                                    "/data/autopid JSON file");
+        }
+
+        cJSON_Delete(parsed);
+    }
+
     if (cJSON_GetArraySize(errors) > 0)
     {
         cJSON *resp = cJSON_CreateObject();
@@ -475,12 +587,29 @@ static esp_err_t settings_backup_post_handler(httpd_req_t *req)
         }
     }
 
+    int files_written = 0;
+
+    cJSON_ArrayForEach(item, files)
+    {
+        if (filesystem_write(item->string, item->valuestring,
+                             strlen(item->valuestring)) == ESP_OK)
+        {
+            files_written++;
+            any_changed = true; /* AutoPID loads its files at boot */
+        }
+        else
+        {
+            ESP_LOGW(TAG, "restore: writing %s failed", item->string);
+        }
+    }
+
     cJSON_Delete(doc);
     cJSON_Delete(errors);
 
     cJSON *resp = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(resp, "restored", restored);
+    cJSON_AddNumberToObject(resp, "files", files_written);
     cJSON_AddItemToObject(resp, "skipped", skipped);
     cJSON_AddBoolToObject(resp, "reboot", any_changed);
 
