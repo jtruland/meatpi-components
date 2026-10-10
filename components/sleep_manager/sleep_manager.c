@@ -41,6 +41,7 @@
 
 #include "battery_monitor.h"
 #include "dev_status_manager.h"
+#include "imu_manager.h"
 #include "log_manager.h"
 #include "obd_chip.h"
 #include "restart_tracker.h"
@@ -67,6 +68,10 @@ static StaticTask_t s_tcb;                    /* internal: FreeRTOS */
 static StackType_t s_stack[4096];
 
 static sleep_manager_status_t s_status;
+
+/* motion wake (bitz fork): the last accelerometer reading of the nap loop */
+static float s_accel_prev[3];
+static bool  s_accel_valid;
 
 /* The countdown the surfaces report ("sleeps in N s"): cause and deadline
  * as ONE word (sm_pending_pack), written under s_lock, so a reader on
@@ -145,6 +150,7 @@ static void enter_sleep_sequence(float volts)
     }
 
     sleep_manager_board_down();
+    s_accel_valid = false; /* motion is measured from here on */
 
     ESP_LOGI(TAG, "components down; napping (wake >= %.2f V)",
              sleep_settings_config()->wake_v);
@@ -231,6 +237,29 @@ static void publish_pending(uint32_t now)
     {
         s_hold_active = false;
     }
+}
+
+/* Motion between two naps. The detector task's activity state is no use
+ * here: it runs on the RTOS tick, which barely advances across manual light
+ * sleep, so read the accelerometer directly (the I2C bus and the IMU stay
+ * up through sleep; main's prepare callback does not stop them). Fails
+ * closed: an unreadable IMU is "no motion" and can never wake the device. */
+static bool motion_since_last_nap(void)
+{
+    float cur[3];
+
+    if (imu_manager_read_accel(&cur[0], &cur[1], &cur[2]) != ESP_OK)
+    {
+        return false;
+    }
+
+    bool moved = s_accel_valid &&
+                 sm_motion_moved(s_accel_prev, cur,
+                                 sleep_settings_config()->motion_g);
+
+    memcpy(s_accel_prev, cur, sizeof(cur));
+    s_accel_valid = true;
+    return moved;
 }
 
 /* ---- state task -------------------------------------------------------------- */
@@ -350,6 +379,10 @@ static void state_task(void *arg)
 
             if (s_run && have_v)
             {
+                /* moving: the sleep delay starts over (bitz fork) */
+                (void)sm_motion_hold(&s_policy, cfg,
+                                     imu_manager_activity() ==
+                                         IMU_MANAGER_ACTIVE, now);
                 act = sm_policy_eval(&s_policy, cfg, volts, now);
                 publish_pending(now); /* the ladder may have armed or cleared */
             }
@@ -416,6 +449,13 @@ static void state_task(void *arg)
 
         if (s_policy.state == SLEEP_MANAGER_SLEEPING)
         {
+            if (sm_motion_wake_due(&s_policy, cfg, volts,
+                                   motion_since_last_nap()))
+            {
+                wake_reboot("motion",
+                            RESTART_TRACKER_PLANNED_REASON_POWER_WAKE);
+            }
+
             nap_and_verify(); /* ~2 s inside light sleep */
         }
         else

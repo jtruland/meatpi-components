@@ -14,5 +14,5 @@ idf_component_register(
     PRIV_REQUIRES battery_monitor obd_chip dev_status_manager
                   restart_tracker event_manager http_server_manager
                   settings_manager log_manager cmdline_manager
-                  esp_driver_gpio esp_hw_support
+                  esp_driver_gpio esp_hw_support imu_manager
 )

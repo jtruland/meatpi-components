@@ -1172,6 +1172,7 @@ const LABELS={
   sta_ble_handover:"Pause the station while a phone is connected over Bluetooth",ap_ble_exclusive:"Pause the access point while a phone is connected over Bluetooth",
   /* sleep_manager */
   sleep_mv:"Sleep voltage (V)",wake_mv:"Wake-up voltage (V)",wake_delay_ms:"Wake up after (s)",sleep_delay_min:"Sleep after (min)",periodic_wakeup:"Periodic wake-up",wakeup_interval_min:"Wake up every (min)",
+  motion_wake:"Wake and stay awake while moving",motion_mg:"Motion threshold (mg)",
   /* data_logger */
   "data_logger.format":"File format",max_file_mb:"Max file size (MB)",max_files:"Files kept",batch_rows:"Rows per batch",
   flush_ms:"Flush interval (ms)",autopid_log:"Record parameters",can_log:"Record CAN frames",can_format:"File format",
@@ -2954,10 +2955,10 @@ PAGES.power=async(view)=>{
   const p=page(view,null,"Power Saving","Sleep behaviour to protect the vehicle battery.");
   const wrap=h("div",{});p.append(wrap);
   try{const rows=await settingsForm("sleep_manager",null,
-      {advancedExcept:["enabled","sleep_mv","wake_mv","wake_delay_ms","sleep_delay_min","periodic_wakeup","wakeup_interval_min"],
+      {advancedExcept:["enabled","sleep_mv","wake_mv","wake_delay_ms","sleep_delay_min","periodic_wakeup","wakeup_interval_min","motion_wake","motion_mg"],
        /* progressive disclosure: nothing but the switch while sleep is off;
           the wake-up interval only once periodic wake-up is on */
-       visible:st=>!st.enabled?["enabled"]:(st.periodic_wakeup?null:["enabled","sleep_mv","wake_mv","wake_delay_ms","sleep_delay_min","periodic_wakeup","cli"])});
+       visible:st=>!st.enabled?["enabled"]:(st.periodic_wakeup?null:["enabled","sleep_mv","wake_mv","wake_delay_ms","sleep_delay_min","periodic_wakeup","motion_wake","motion_mg","cli"])});
     const st=await tryGet("/api/sleep");
     /* meatpi 2026-09-07: anything motion/wake related must be visible here. "Wake on
        motion" (the IMU's bump detector) ships off; when it is on, say so: and say what

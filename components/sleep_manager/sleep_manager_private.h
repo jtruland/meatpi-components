@@ -64,6 +64,8 @@ typedef struct
     uint32_t delay_ms;       /* LOW_VOLTAGE countdown                  */
     bool     periodic;
     uint32_t interval_ms;    /* periodic check-in while SLEEPING       */
+    bool     motion_wake;    /* v5 (bitz): IMU motion wakes / holds awake */
+    float    motion_g;       /* per-axis delta between naps that counts */
 } sm_cfg_t;
 
 typedef struct
@@ -75,6 +77,24 @@ typedef struct
 } sm_policy_t;
 
 void sm_policy_init(sm_policy_t *p);
+
+/* MOTION (bitz fork, v4 commit d01d388 ported to v6). A regulated-voltage
+ * alternator (GM RVC on the Sierra) parks the bus inside the sleep/wake
+ * band while driving, so voltage alone sleeps the device mid-trip and never
+ * wakes it. Motion has no such ambiguity. Pure parts, host-tested: */
+
+/** True when any axis moved more than @p limit_g between two readings. */
+bool sm_motion_moved(const float prev[3], const float cur[3], float limit_g);
+
+/** SLEEPING: wake on motion, gated on the critical floor exactly like the
+ *  periodic check-in so a flat battery is never woken by a bump. */
+bool sm_motion_wake_due(const sm_policy_t *p, const sm_cfg_t *cfg,
+                        float volts, bool moved);
+
+/** LOW_VOLTAGE while the IMU says ACTIVE: restart the sleep delay, so a
+ *  moving vehicle never enters sleep. Returns true when it pushed. */
+bool sm_motion_hold(sm_policy_t *p, const sm_cfg_t *cfg, bool active,
+                    uint32_t now_ms);
 
 /* The CRITICAL FLOOR (Ali, 2026-10-01): a battery that reads under
  * SM_CRITICAL_V for SM_CRITICAL_DELAY_MS puts the device to sleep
