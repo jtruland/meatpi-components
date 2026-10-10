@@ -61,6 +61,7 @@
 #include "sdkconfig.h"
 #include "usb_acm_cli.h" /* usb_acm_cli_gps_get: the dongle fix */
 #include "vpn_manager.h"
+#include "wifi_manager.h" /* wifi_manager_get_sta_ip: bitz sta_ip */
 
 #include "ha_webhooks_private.h"
 
@@ -148,6 +149,16 @@ static cJSON *build_status(void)
 
         snprintf(url, sizeof(url), "http://%s", host);
         cJSON_AddStringToObject(s, "mdns", url); /* HA configuration_url */
+    }
+
+    /* station IP for ha-wican's sta_ip sensor: a private LAN address, not
+       a secret, so it rides the webhook (bitz fork, was 33baf1c on v4) */
+    char sta_ip[16] = "";
+
+    if (wifi_manager_get_sta_ip(sta_ip, sizeof(sta_ip)) == ESP_OK &&
+        sta_ip[0] != '\0')
+    {
+        cJSON_AddStringToObject(s, "sta_ip", sta_ip);
     }
 
     cJSON *bits = cJSON_AddObjectToObject(s, "bits");

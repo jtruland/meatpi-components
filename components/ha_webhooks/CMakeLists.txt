@@ -13,5 +13,5 @@ idf_component_register(
     PRIV_REQUIRES settings_manager log_manager http_server_manager
                   http_client_manager autopid dev_status_manager
                   battery_monitor vpn_manager mdns_manager obd_chip
-                  cmdline_manager usb_acm_cli
+                  cmdline_manager usb_acm_cli wifi_manager
 )
