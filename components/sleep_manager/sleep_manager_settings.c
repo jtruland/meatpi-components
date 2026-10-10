@@ -70,7 +70,7 @@ static const settings_field_t FIELDS[] =
     SETTINGS_INT("sleep_delay_min", 1, 30, 5),
     SETTINGS_BOOL("periodic_wakeup", false),
     SETTINGS_INT("wakeup_interval_min", 5, 1440, 30),
-    /* v5 (bitz fork): IMU motion wakes a sleeping device and holds an awake
+    /* bitz fork: IMU motion wakes a sleeping device and holds an awake
        one up while the vehicle moves. Voltage cannot tell parked from
        driving on a regulated-voltage alternator; motion can. 125 mg is the
        v4 fork's wom_threshold 32 x 3.9 mg, per axis between 2 s naps. */
@@ -210,8 +210,8 @@ esp_err_t sleep_settings_register(void)
     static const settings_descriptor_t DESC =
     {
         .name = "sleep_manager",
-        .version = 5, /* v2: sane ranges (2026-09-06); v3: wake_mv; v4: wake_delay_ms (2026-10-01);
-                         v5 (bitz): motion_wake + motion_mg, filled from the defaults */
+        .version = 4, /* v2: sane ranges (2026-09-06); v3: wake_mv; v4: wake_delay_ms (2026-10-01);
+                         bitz motion_wake/motion_mg: non-breaking additions, no bump */
         .fields = FIELDS,
         .field_count = sizeof(FIELDS) / sizeof(FIELDS[0]),
         .on_apply = on_apply,
