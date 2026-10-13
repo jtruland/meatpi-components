@@ -204,10 +204,22 @@ static cJSON *build_status(void)
 
     if (vpn_manager_status(&vs) == ESP_OK)
     {
+        /* keyed by the enum, not by position: VPN_STATE_PAUSED was
+           inserted mid-enum (#976) and shifted every later index; an
+           unknown value must never index past the table (#985) */
         static const char *VPN_STATES[] =
-        { "disabled", "waiting", "connecting", "connected" };
+        {
+            [VPN_STATE_DISABLED]   = "disabled",
+            [VPN_STATE_WAITING]    = "waiting",
+            [VPN_STATE_PAUSED]     = "paused",
+            [VPN_STATE_CONNECTING] = "connecting",
+            [VPN_STATE_CONNECTED]  = "connected",
+        };
+        const char *vstate =
+            ((unsigned)vs.state < sizeof(VPN_STATES) / sizeof(VPN_STATES[0]) &&
+             VPN_STATES[vs.state] != NULL) ? VPN_STATES[vs.state] : "unknown";
 
-        cJSON_AddStringToObject(s, "vpn_status", VPN_STATES[vs.state]);
+        cJSON_AddStringToObject(s, "vpn_status", vstate);
 
         char tip[32];
 
