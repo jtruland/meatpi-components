@@ -297,6 +297,18 @@ static esp_err_t unseal_raw(const uint8_t *key)
     s_st.raw_len = 0;
     s_st.doc = plain;
     s_st.doc_len = plen;
+
+    /* #986: the encrypted wrapper carries no `redacted`; the sealed document
+       does. Without this, a redacted+encrypted backup restores its blanked
+       secrets as "" (or is refused by the VPN check) and never shows the
+       "passwords removed" notice. */
+    cb_member_t red_m;
+
+    if (cb_json_find(plain, plen, "redacted", &red_m) && cb_json_bool(&red_m))
+    {
+        s_st.redacted = true;
+    }
+
     return ESP_OK;
 }
 
