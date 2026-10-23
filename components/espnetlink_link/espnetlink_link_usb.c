@@ -151,8 +151,14 @@ static espnl_sm_event_t act_get_info(void)
         return ESPNL_EV_NOT_ESPNETLINK;
     }
 
-    ESP_LOGI(TAG, "identified ESPNetLink %s (fw %s, api %d)", info.device_id,
-             info.fw_version, info.api_level);
+    ESP_LOGI(TAG, "identified ESPNetLink %s (fw %s, api %d)%s", info.device_id,
+             info.fw_version, info.api_level,
+             s_sm.state == ESPNL_SM_UNREACHABLE
+                 ? " after it had not answered" : "");
+    if (s_sm.state == ESPNL_SM_UNREACHABLE)
+    {
+        espnl_status_set_last_error("");
+    }
     espnl_engine_note_info(info.device_id, info.fw_version, info.api_level);
     if (info.api_level < ESPNL_MIN_API_LEVEL)
     {
@@ -744,10 +750,25 @@ static void run(espnl_sm_event_t ev)
                          (unsigned long)s_cuts);
             }
             else if ((s_sm.state == ESPNL_SM_FOREIGN ||
-                      s_sm.state == ESPNL_SM_UNSUPPORTED) &&
+                      s_sm.state == ESPNL_SM_UNSUPPORTED ||
+                      s_sm.state == ESPNL_SM_UNREACHABLE) &&
                      before != ESPNL_SM_IDLE)
             {
                 s_errors++;
+                if (s_sm.state == ESPNL_SM_UNREACHABLE)
+                {
+                    ESP_LOGW(TAG, "the ESPNetLink enumerated (303A:4007) "
+                                  "but did not answer /api/info within %d s: "
+                                  "asking every %d s, one VBUS cycle after "
+                                  "%d s",
+                             ESPNL_SM_IDENTIFY_MS / 1000,
+                             ESPNL_SM_UNREACH_RETRY_MS / 1000,
+                             ESPNL_SM_UNREACH_CYCLE_MS / 1000);
+                    espnl_status_set_last_error(
+                        "the dongle enumerated but does not answer "
+                        "/api/info: the WiCAN keeps asking and power-cycles "
+                        "it once after two minutes");
+                }
             }
         }
 

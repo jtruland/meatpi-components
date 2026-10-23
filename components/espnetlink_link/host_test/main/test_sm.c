@@ -118,21 +118,121 @@ static void test_sm_foreign_device(void)
     TEST_ASSERT_EQUAL(ESPNL_SM_FOREIGN, sm.state);
 }
 
-static void test_sm_identify_retries_then_gives_up(void)
+/* identify: retried every tick inside the budget, then the device is
+ * `unreachable` (it IS an ESPNetLink by its USB identity), never
+ * `foreign` (2026-10-23) */
+static void test_sm_identify_retries_then_unreachable(void)
 {
     setup_wifi();
     TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, step(ESPNL_EV_LINK_UP));
     TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
-    /* retried every tick inside the 5 s budget */
     TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(1000));
     TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
     TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(1000));
     TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
     TEST_ASSERT_EQUAL(ESPNL_SM_IDENTIFY, sm.state);
-    /* budget gone: ignore until it re-plugs (no power cycling for a
-     * device that merely does not answer HTTP) */
+    /* still inside the 15 s budget at 12 s */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(10000));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+    TEST_ASSERT_EQUAL(ESPNL_SM_IDENTIFY, sm.state);
+    /* the budget gone: unreachable, not foreign, nothing fired yet */
     TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(4000));
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    TEST_ASSERT_EQUAL_STRING("unreachable", espnl_sm_state_str(sm.state));
+    TEST_ASSERT_EQUAL(0, sm.retries);
+
+    /* a GET every 10 s, each failure leaves the state alone */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(5000));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(5000));
+    TEST_ASSERT_EQUAL(1, sm.retries);
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(9000));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(1000));
+    TEST_ASSERT_EQUAL(2, sm.retries);
+
+    /* it answers after all: the pairing goes on from identify */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_KEY, step(ESPNL_EV_OK));
+    TEST_ASSERT_EQUAL(ESPNL_SM_READ_KEY, sm.state);
+
+    /* and a USB-Ethernet adapter still goes straight to foreign */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_LINK_DOWN));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_LINK_UP_OTHER));
     TEST_ASSERT_EQUAL(ESPNL_SM_FOREIGN, sm.state);
+}
+
+/* unreachable for two minutes: one VBUS cycle (budgeted like every other
+ * recovery), the cadence slows to a GET every 60 s once the budget is
+ * spent, a link drop clears it, the operator's re-pair cycles at once */
+static void test_sm_unreachable_cycles_then_slows(void)
+{
+    setup_wifi();
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, step(ESPNL_EV_LINK_UP));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(16000));
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+
+    /* 2 min of failed GETs: the cycle fires on the next tick after 120 s */
+    for (int i = 0; i < 11; i++)
+    {
+        TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(10000));
+        TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+    }
+    TEST_ASSERT_EQUAL(11, sm.retries);
+    TEST_ASSERT_EQUAL(ESPNL_ACT_VBUS_CYCLE, tick(10000));
+    TEST_ASSERT_EQUAL(ESPNL_SM_IDLE, sm.state);
+    TEST_ASSERT_EQUAL(1, sm.cycles);
+
+    /* the power cycle re-enumerates it: identify again; still silent */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_LINK_DOWN));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, step(ESPNL_EV_LINK_UP));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(16000));
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    TEST_ASSERT_EQUAL(0, sm.retries);
+
+    /* two more cycles spend the budget; after that no VBUS cycle, a GET
+     * every 60 s instead, forever */
+    for (int c = 0; c < 2; c++)
+    {
+        for (int i = 0; i < 11; i++)
+        {
+            TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, tick(10000));
+            TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+        }
+        TEST_ASSERT_EQUAL(ESPNL_ACT_VBUS_CYCLE, tick(10000));
+        TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_LINK_DOWN));
+        TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, step(ESPNL_EV_LINK_UP));
+        TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+        TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(16000));
+        TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    }
+    TEST_ASSERT_EQUAL(3, sm.cycles);
+    for (int i = 0; i < 12; i++)
+    {
+        espnl_sm_action_t a = tick(10000);
+
+        TEST_ASSERT_TRUE(a == ESPNL_ACT_NONE || a == ESPNL_ACT_GET_INFO);
+        TEST_ASSERT_NOT_EQUAL(ESPNL_ACT_VBUS_CYCLE, a);
+        TEST_ASSERT_NOT_EQUAL(ESPNL_ACT_GIVE_UP, a);
+        if (a == ESPNL_ACT_GET_INFO)
+        {
+            TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_FAIL));
+        }
+    }
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    TEST_ASSERT_EQUAL(2, sm.retries);   /* 120 s at one GET per 60 s */
+
+    /* the operator's re-pair spends a cycle regardless of the budget */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_VBUS_CYCLE, step(ESPNL_EV_REPAIR));
+    TEST_ASSERT_EQUAL(ESPNL_SM_IDLE, sm.state);
+
+    /* a drop while unreachable: idle, the next link-up starts afresh */
+    TEST_ASSERT_EQUAL(ESPNL_ACT_GET_INFO, step(ESPNL_EV_LINK_UP));
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, tick(16000));
+    TEST_ASSERT_EQUAL(ESPNL_SM_UNREACHABLE, sm.state);
+    TEST_ASSERT_EQUAL(ESPNL_ACT_NONE, step(ESPNL_EV_LINK_DOWN));
+    TEST_ASSERT_EQUAL(ESPNL_SM_IDLE, sm.state);
 }
 
 static void test_sm_cut_retry_then_recover(void)
@@ -346,7 +446,8 @@ void run_sm_tests(void)
     RUN_TEST(test_sm_drop_during_cut_post_counts);
     RUN_TEST(test_sm_tether_mode_409);
     RUN_TEST(test_sm_foreign_device);
-    RUN_TEST(test_sm_identify_retries_then_gives_up);
+    RUN_TEST(test_sm_identify_retries_then_unreachable);
+    RUN_TEST(test_sm_unreachable_cycles_then_slows);
     RUN_TEST(test_sm_cut_retry_then_recover);
     RUN_TEST(test_sm_drop_timeout_repost_then_recover);
     RUN_TEST(test_sm_recovery_budget);

@@ -60,13 +60,14 @@ Rules (contract §3) as implemented by the pure machine in
 | State | Meaning / exits |
 |---|---|
 | `idle` | no ESPNetLink on USB. `LINK_UP` (303A:4007) → `identify`; any other NCM device → `foreign` |
-| `identify` | `/api/info` (retried every tick for 5 s) → `read_key` (`usb_ncm`: → `ncm_share`); not an ESPNetLink / timeout → `foreign` |
+| `identify` | `/api/info` (retried every tick for 15 s) → `read_key` (`usb_ncm`: → `ncm_share`); not an ESPNetLink by its answer → `foreign`; no answer at all → `unreachable` |
+| `unreachable` | an ESPNetLink by its USB identity that does not answer HTTP (2026-10-23: a reply the host never delivered looked exactly like this). `/api/info` every 10 s; after 2 min one VBUS cycle, budgeted like every recovery (3, 60 s apart); the budget spent → every 60 s, forever. An answer → `read_key` / `ncm_share`; a drop → `idle`; `REPAIR` cycles at once. `last_error` says so |
 | `read_key` | credentials → store → `cut` (POST). 5 s without a key → VBUS recovery |
 | `cut` | 200 → `wait_drop`; **409** (dongle `usb_mode=ncm`, the owner locked USB on) → `tether`; fail → re-POST up to `cut_retries`, then recovery |
 | `wait_drop` | the device must disappear within 3 s (one more POST at 3 s: the dongle answers "already"); still there at 10 s → recovery |
 | `done` | cut landed (cable = power only). `REBOOT` if the key changed. Re-enumeration → `identify` again (a swapped/reset dongle self-heals); `AP_STALE` → recovery |
 | `tether` | leave the USB link alone; the stored key still works for the AP |
-| `foreign` | ignore until the device re-plugs |
+| `foreign` | not an ESPNetLink (another USB-Ethernet device, or `/api/info` says another device type): ignore until the device re-plugs |
 | `ncm_share` / `ncm_up` | `usb_ncm` mode only, see below |
 
 **The steady state since 2026-10-12.** Every dongle boot enumerates (the

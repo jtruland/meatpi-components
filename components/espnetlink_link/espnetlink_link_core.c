@@ -457,7 +457,7 @@ bool espnl_core_url(char *out, unsigned out_len, const char *host,
 static const char *const STATE_STR[ESPNL_SM_COUNT] =
 {
     "idle", "identify", "read_key", "cut", "wait_drop", "done", "tether",
-    "foreign", "ncm_share", "ncm_up", "hold", "unsupported",
+    "foreign", "ncm_share", "ncm_up", "hold", "unsupported", "unreachable",
 };
 
 const char *espnl_sm_state_str(espnl_sm_state_t s)
@@ -600,11 +600,68 @@ espnl_sm_action_t espnl_sm_step(espnl_sm_t *sm, espnl_sm_event_t ev,
             {
                 if (elapsed(sm, now_ms) >= ESPNL_SM_IDENTIFY_MS)
                 {
-                    enter(sm, ESPNL_SM_FOREIGN, now_ms);
+                    /* it IS an ESPNetLink by its USB identity, it only
+                     * does not answer HTTP: keep asking on a slow cadence
+                     * instead of parking it as foreign (2026-10-23: a
+                     * reply the host never delivered looked exactly like
+                     * this, and nothing retried until a re-plug) */
+                    enter(sm, ESPNL_SM_UNREACHABLE, now_ms);
+                    sm->last_try_ms = now_ms;
+                    sm->retries = 0;
                     return ESPNL_ACT_NONE;
                 }
                 return ev == ESPNL_EV_TICK ? ESPNL_ACT_GET_INFO
                                            : ESPNL_ACT_NONE;
+            }
+            return ESPNL_ACT_NONE;
+
+        case ESPNL_SM_UNREACHABLE:
+            if (ev == ESPNL_EV_OK)
+            {
+                /* it answered after all: the pairing goes on as from
+                 * identify */
+                if (sm->ncm_mode)
+                {
+                    enter(sm, ESPNL_SM_NCM_SHARE, now_ms);
+                    return ESPNL_ACT_ENSURE_SHARE;
+                }
+                enter(sm, ESPNL_SM_READ_KEY, now_ms);
+                return ESPNL_ACT_GET_KEY;
+            }
+            if (ev == ESPNL_EV_NOT_ESPNETLINK)
+            {
+                enter(sm, ESPNL_SM_FOREIGN, now_ms);
+                return ESPNL_ACT_NONE;
+            }
+            if (ev == ESPNL_EV_UNSUPPORTED)
+            {
+                enter(sm, ESPNL_SM_UNSUPPORTED, now_ms);
+                return ESPNL_ACT_NONE;
+            }
+            if (ev == ESPNL_EV_TICK)
+            {
+                bool can_cycle = sm->cycles < ESPNL_SM_MAX_CYCLES &&
+                                 (uint32_t)(now_ms - sm->last_cycle_ms) >=
+                                     ESPNL_SM_CYCLE_GAP_MS;
+
+                if (elapsed(sm, now_ms) >= ESPNL_SM_UNREACH_CYCLE_MS &&
+                    can_cycle)
+                {
+                    /* a fresh enumeration is the one thing that has helped
+                     * in practice; budgeted like every other recovery */
+                    return recover(sm, now_ms);
+                }
+
+                uint32_t period = sm->cycles >= ESPNL_SM_MAX_CYCLES
+                                      ? ESPNL_SM_UNREACH_SLOW_MS
+                                      : ESPNL_SM_UNREACH_RETRY_MS;
+
+                if ((uint32_t)(now_ms - sm->last_try_ms) >= period)
+                {
+                    sm->last_try_ms = now_ms;
+                    sm->retries++;
+                    return ESPNL_ACT_GET_INFO;
+                }
             }
             return ESPNL_ACT_NONE;
 

@@ -236,6 +236,11 @@ typedef enum
                               operator, no retries, no VBUS cycles         */
     ESPNL_SM_UNSUPPORTED,/**< the dongle firmware lacks the API (404 /
                               api_level too old): update it, then re-plug */
+    ESPNL_SM_UNREACHABLE,/**< enumerated as an ESPNetLink (303A:4007) but
+                              /api/info never answered within the identify
+                              budget: a GET every 10 s, one VBUS cycle after
+                              2 min (budgeted), then a GET every 60 s; an
+                              answer resumes the pairing (2026-10-23)      */
     ESPNL_SM_COUNT
 } espnl_sm_state_t;
 
@@ -268,7 +273,12 @@ typedef enum
     ESPNL_ACT_GIVE_UP,        /**< recovery budget exhausted               */
 } espnl_sm_action_t;
 
-#define ESPNL_SM_IDENTIFY_MS   5000   /* /api/info budget per attach      */
+#define ESPNL_SM_IDENTIFY_MS   15000  /* /api/info budget per attach (the
+                                         first GET after a re-enumeration
+                                         tends to time out: 2026-10-23)   */
+#define ESPNL_SM_UNREACH_RETRY_MS 10000 /* unreachable: a GET this often    */
+#define ESPNL_SM_UNREACH_CYCLE_MS 120000 /* unreachable this long: VBUS cycle */
+#define ESPNL_SM_UNREACH_SLOW_MS  60000 /* cycles spent: a GET this often   */
 #define ESPNL_SM_READ_KEY_MS   5000
 #define ESPNL_SM_DROP_RETRY_MS 3000   /* re-POST the cut once after this  */
 #define ESPNL_SM_DROP_FAIL_MS  10000  /* still enumerated: VBUS cycle     */
@@ -287,6 +297,8 @@ typedef struct
     int      cut_posts;       /**< POSTs issued for this attach            */
     bool     reboot_pending;  /**< set by the engine when the key changed  */
     bool     link_up;
+    uint32_t last_try_ms;     /**< unreachable: the last GET /api/info     */
+    int      retries;         /**< unreachable: GETs since entering it     */
 } espnl_sm_t;
 
 void espnl_sm_init(espnl_sm_t *sm, bool ncm_mode, int cut_retries,
