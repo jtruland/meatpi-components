@@ -543,13 +543,22 @@ find_class:
             goto find_class;
         }
 
-        g_rndis_rx_length += g_rndis_class.bulkin_urb.actual_length;
+        uint32_t got = g_rndis_class.bulkin_urb.actual_length;
 
-        /* A transfer is complete because last packet is a short packet.
-         * Short packet is not zero, match g_rndis_rx_length % USB_GET_MAXPACKETSIZE(g_rndis_class.bulkin->wMaxPacketSize).
-         * Short packet cannot be zero.
+        g_rndis_rx_length += got;
+
+        /* A transfer is complete when its last packet was short. The urb
+         * then ends before transfer_size, and the total may still be a
+         * multiple of wMaxPacketSize: a device that terminates such a
+         * transfer with a zero-length packet (the USB rule; the ESPNetLink's
+         * usbd_rndis does) leaves a 6 x 64 byte RNDIS message here that the
+         * old "short packet is not zero" test never parsed until another
+         * frame landed on top of it (bench 2026-10-23: every HTTP reply of
+         * exactly 384 bytes on the wire vanished, DHCP and ICMP passed). The
+         * dummy-byte convention (a 1 byte short packet) is the other case
+         * and still works: the parser drops the stray byte below.
         */
-        if (g_rndis_rx_length % USB_GET_MAXPACKETSIZE(g_rndis_class.bulkin->wMaxPacketSize)) {
+        if ((got < transfer_size) || (g_rndis_rx_length % USB_GET_MAXPACKETSIZE(g_rndis_class.bulkin->wMaxPacketSize))) {
             pmg_offset = 0;
 
             uint32_t total_len = g_rndis_rx_length;
