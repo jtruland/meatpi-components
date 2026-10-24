@@ -48,11 +48,13 @@
    console can't reproduce init/rxheader/expression handling */
 esp_err_t test_post_handler(httpd_req_t *req)
 {
-    /* PSRAM buffers: an "expressions" list for a 32-parameter DID does
-       not fit a 512 B stack body, and the transcript is ~1 KB. Handlers
-       run on the one httpd task, so plain statics are safe; the chip
-       itself is guarded by the job lock below. */
-    static char s_body[2048] EXT_RAM_BSS_ATTR;
+    /* PSRAM buffers: an "expressions" list for a 96-parameter DID (the
+       bZ4X and Leaf cell voltages, 2026-10-24: the 2 KB cap cut the
+       bZ4X's list and the parse failed as "cmd required") does not fit
+       a 512 B stack body, and the transcript is ~1 KB. Handlers run on
+       the one httpd task, so plain statics are safe; the chip itself is
+       guarded by the job lock below. */
+    static char s_body[6144] EXT_RAM_BSS_ATTR;
     static char s_raw[AP_RESP_MAX] EXT_RAM_BSS_ATTR;
     static char s_tr[1536] EXT_RAM_BSS_ATTR;
 
@@ -214,31 +216,45 @@ esp_err_t test_post_handler(httpd_req_t *req)
     cJSON_AddStringToObject(o, "raw", s_raw);
     cJSON_AddStringToObject(o, "transcript", s_tr);
 
-    bool have_payload =
-        err == ESP_OK &&
-        (is_pgn ||
-         ap_resp_to_payload(s_raw, payload, sizeof(s_payload), &n) == ESP_OK);
+    /* the bytes the expressions index: a chip reply as the chip printed it
+       with headers on (ap_resp_frames: the legacy frame of reference, the
+       published profiles'; 2026-10-24, issue #1014), a J1939 group's
+       message as the listener holds it. PSRAM statics: httpd task only. */
+    static uint8_t s_frames[AP_FRAMES_MAX] EXT_RAM_BSS_ATTR;
+    static char s_hex[AP_FRAMES_MAX * 3 + 4] EXT_RAM_BSS_ATTR;
+    bool have_payload = (err == ESP_OK);
+
+    if (have_payload && !is_pgn)
+    {
+        ap_runner_reply_hint((tidx >= 0) ? ap_runner_type_init(tidx) : NULL,
+                             cJSON_IsString(init) ? init->valuestring : NULL,
+                             cJSON_IsString(rxh) ? rxh->valuestring : NULL);
+        have_payload = (ap_resp_frames(s_raw, s_frames, sizeof(s_frames),
+                                       &n) == ESP_OK);
+        payload = s_frames;
+    }
 
     if (have_payload)
     {
-        /* the first 128 bytes as hex (a transport-protocol message can be
+        /* the first 256 bytes as hex (a transport-protocol message can be
            longer: the expressions still see all of it) */
-        char hex[AP_PAYLOAD_MAX * 3 + 4];
         size_t w = 0;
-        size_t shown = (n < AP_PAYLOAD_MAX) ? n : AP_PAYLOAD_MAX;
+        size_t shown = (n < AP_FRAMES_MAX) ? n : AP_FRAMES_MAX;
 
-        for (size_t i = 0; i < shown; i++)
+        s_hex[0] = '\0';
+
+        for (size_t i = 0; i < shown && w + 4 < sizeof(s_hex); i++)
         {
-            w += snprintf(hex + w, sizeof(hex) - w, "%02X%s", payload[i],
-                          (i + 1 < shown) ? " " : "");
+            w += (size_t)snprintf(s_hex + w, sizeof(s_hex) - w, "%02X%s",
+                                  payload[i], (i + 1 < shown) ? " " : "");
         }
 
-        if (shown < n)
+        if (shown < n && w + 4 < sizeof(s_hex))
         {
-            snprintf(hex + w, sizeof(hex) - w, "...");
+            snprintf(s_hex + w, sizeof(s_hex) - w, "...");
         }
 
-        cJSON_AddStringToObject(o, "payload", hex);
+        cJSON_AddStringToObject(o, "payload", s_hex);
     }
     else if (err == ESP_OK)
     {

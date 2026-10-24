@@ -38,9 +38,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef AUTOPID_HOST_TEST
-#include "cJSON.h"
-#endif
+#include "cJSON.h"   /* the table JSON (target) and the stored rows'
+                        refresh (pure, host-tested) */
 
 #include "obd2_standard_pids.h"
 
@@ -142,8 +141,11 @@ esp_err_t ap_std_expression_bounded(uint8_t bit_start, uint8_t bit_length,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    /* drop legacy's PCI byte; a dialect with a longer echo moves on */
-    int first = bit_start / 8 - 1 + shift;
+    /* the table counts the frame as the chip prints it with headers on,
+       [PCI, mode, PID, A, B, ..], and so do the expressions since
+       2026-10-24 (issue #1014; until then the PCI byte was dropped here);
+       a dialect with a longer echo moves on */
+    int first = bit_start / 8 + shift;
     int count = (bit_length + 7) / 8;
     char base[32];
 
@@ -277,10 +279,10 @@ bool ap_std_scan_parse(const char *resp, uint8_t expect_pid,
                            sizeof(bytes));
 
         /* anchor on "41 <pid>" anywhere in the line: headers-on rows
-           (11-bit, 3-hex header + PCI) work because the anchor skips
-           leading bytes. Noise lines (SEARCHING, "N:" ISO rows, 8-hex
-           29-bit headers) fail tokenization and are skipped; the scan
-           prelude pins ATH0 so bitmap rows are plain "41 XX ..". */
+           (`7E8 06 41 00 ..`, the CAN prelude's since 2026-10-24, and the
+           four-token 29-bit id) work because the anchor skips the leading
+           bytes; a K-line reply is the plain "41 XX ..". Noise lines
+           (SEARCHING, "N:" ISO rows) fail tokenization and are skipped. */
         for (int i = 0; n > 0 && i + 1 < n; i++)
         {
             if (bytes[i] == 0x41 && bytes[i + 1] == expect_pid)
@@ -370,6 +372,159 @@ int ap_frz_decode(const uint8_t *payload, size_t len, ap_frz_val_t *out,
     }
 
     return n;
+}
+
+/* ---- PURE: stored standard rows re-numbered (2026-10-24, issue #1014) ------------ */
+
+static int hex_pair(const char *s)
+{
+    if (!isxdigit((unsigned char)s[0]) || !isxdigit((unsigned char)s[1]))
+    {
+        return -1;
+    }
+
+    char pair[3] = { s[0], s[1], '\0' };
+
+    return (int)strtol(pair, NULL, 16);
+}
+
+/** The table entry a standard row's command names, and its dialect: `01XX`
+ *  (a response-count digit may follow) is the OBD-II row of PID XX,
+ *  `22F4XX` the UDS-dialect one. @return NULL for any other command. */
+static const std_pid_t *row_table_entry(const char *cmd,
+                                        ap_dialect_t *dialect)
+{
+    size_t n = strlen(cmd);
+    int pid = -1;
+
+    if ((n == 4 || n == 5) && cmd[0] == '0' && cmd[1] == '1')
+    {
+        pid = hex_pair(cmd + 2);
+        *dialect = AP_DIALECT_OBD2;
+    }
+    else if ((n == 6 || n == 7) && cmd[0] == '2' && cmd[1] == '2' &&
+             toupper((unsigned char)cmd[2]) == 'F' && cmd[3] == '4')
+    {
+        pid = hex_pair(cmd + 4);
+        *dialect = AP_DIALECT_UDS;
+    }
+
+    return (pid >= 0) ? get_pid((uint8_t)pid) : NULL;
+}
+
+/** The row's parameter name is the table's, or the table's with the
+ *  `_2`, `_3` suffix the duplicate-name repair gives a repeat. */
+static bool name_is(const char *table_name, const char *row_name)
+{
+    size_t n = strlen(table_name);
+
+    if (strncmp(table_name, row_name, n) != 0)
+    {
+        return false;
+    }
+
+    if (row_name[n] == '\0')
+    {
+        return true;
+    }
+
+    return row_name[n] == '_' && isdigit((unsigned char)row_name[n + 1]);
+}
+
+int ap_std_refresh_rows(cJSON *pids)
+{
+    int changed = 0;
+    cJSON *pid = NULL;
+
+    cJSON_ArrayForEach(pid, pids)
+    {
+        const cJSON *type = cJSON_GetObjectItemCaseSensitive(pid, "type");
+        const cJSON *cmd = cJSON_GetObjectItemCaseSensitive(pid, "cmd");
+        ap_dialect_t dialect = AP_DIALECT_OBD2;
+
+        if (!cJSON_IsString(type) || strcmp(type->valuestring, "std") != 0 ||
+            !cJSON_IsString(cmd))
+        {
+            continue;
+        }
+
+        const std_pid_t *info = row_table_entry(cmd->valuestring, &dialect);
+
+        if (info == NULL || info->base_name == NULL)
+        {
+            continue;
+        }
+
+        int shift = ap_dialect_data_shift(dialect);
+        cJSON *prm = NULL;
+
+        cJSON_ArrayForEach(prm,
+                           cJSON_GetObjectItemCaseSensitive(pid, "parameters"))
+        {
+            const cJSON *name = cJSON_GetObjectItemCaseSensitive(prm, "name");
+            cJSON *expr = cJSON_GetObjectItemCaseSensitive(prm, "expression");
+
+            if (!cJSON_IsString(name) || !cJSON_IsString(expr))
+            {
+                continue;
+            }
+
+            for (int i = 0; i < info->num_params; i++)
+            {
+                const std_parameter_t *p = &info->params[i];
+                char fresh[AP_EXPR_LEN];
+
+                if (p->name == NULL || !name_is(p->name, name->valuestring))
+                {
+                    continue;
+                }
+
+                /* as ap_std_entry_to_json writes a fresh row */
+                bool ranged = !(p->min == 0.0f && p->max == 0.0f);
+
+                if (ap_std_expression_bounded(p->bit_start, p->bit_length,
+                                              (double)p->scale,
+                                              (double)p->offset,
+                                              ranged ? (double)p->min : NAN,
+                                              ranged ? (double)p->max : NAN,
+                                              shift, fresh,
+                                              sizeof(fresh)) == ESP_OK &&
+                    strcmp(fresh, expr->valuestring) != 0 &&
+                    cJSON_SetValuestring(expr, fresh) != NULL)
+                {
+                    changed++;
+                }
+
+                break;
+            }
+        }
+    }
+
+    return changed;
+}
+
+char *ap_config_refresh_std(const char *json, int *changed)
+{
+    cJSON *root = cJSON_Parse(json);
+    char *out = NULL;
+
+    *changed = 0;
+
+    if (root == NULL)
+    {
+        return NULL; /* not ours to judge: the parser says what is wrong */
+    }
+
+    *changed = ap_std_refresh_rows(cJSON_GetObjectItemCaseSensitive(root,
+                                                                    "pids"));
+
+    if (*changed > 0)
+    {
+        out = cJSON_PrintUnformatted(root);
+    }
+
+    cJSON_Delete(root);
+    return out;
 }
 
 /* ---- target half: table JSON (the scan job: autopid_std_scan.c) ---------------- */

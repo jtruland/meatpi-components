@@ -61,8 +61,14 @@ extern "C" {
 #define AP_UNIT_LEN     16
 #define AP_CLASS_LEN    24
 
-#define AP_PAYLOAD_MAX  128    /* assembled response payload bytes          */
-#define AP_RESP_MAX     1024   /* raw chip response text                    */
+#define AP_PAYLOAD_MAX  128    /* framing-free payload bytes: the parsers
+                                  (VIN, DTC, detection), the cross-talk guard */
+#define AP_FRAMES_MAX   256    /* the reply as the chip prints it with headers
+                                  on, what user expressions index (2026-10-24,
+                                  issue #1014): 28 frames of 8 (the Leaf
+                                  ZE1's 2102, the Xpeng's 221122) = 224      */
+#define AP_RESP_MAX     2048   /* raw chip response text: 28 frames behind a
+                                  29-bit id are ~1040 characters              */
 #define AP_RESTORE_LEN  128    /* the baseline prelude + every undo command
                                   (ap_chain_restore: 107 chars at most)     */
 
@@ -374,6 +380,14 @@ esp_err_t ap_runner_test(int type, const char *type_init, const char *init,
                          size_t raw_len, int64_t *elapsed_us,
                          char *transcript, size_t transcript_len);
 
+/** Tell the reply parser how to read a 29-bit id for the row about to be
+ *  parsed (ap_resp_set_id29_hint): the row's receive filter (@p rxheader,
+ *  else an ATCRA in @p init, else one in @p type_init) and whether the
+ *  protocol in effect is 29-bit. Before ap_resp_frames() of a poll or a
+ *  test shot. */
+void ap_runner_reply_hint(const char *type_init, const char *init,
+                          const char *rxheader);
+
 /* the transcript of a test (autopid_transcript.c, pure): replies flattened
    to one line and capped, a line that does not fit is dropped */
 typedef struct
@@ -460,6 +474,18 @@ int ap_names_dedupe(cJSON *pids);
  *  text does not parse (the parser then says what is wrong). */
 char *ap_config_repair_names(const char *json, int *renamed);
 
+/** The standard rows of a config text re-numbered to the table's current
+ *  expressions (autopid_std.c; 2026-10-24, issue #1014: the expressions
+ *  count the frame as the chip prints it, and a car the store knows keeps
+ *  its rows across detections, so the file is brought up to date where it
+ *  is loaded). A row is matched by its `cmd` (`01XX`, `22F4XX`) and each
+ *  parameter by the table's name (a `_2` suffix of the repair allowed);
+ *  anything else is left alone. @return the fixed text (malloc'd, caller
+ *  frees) and how many expressions changed; NULL and 0 when none did or
+ *  the text does not parse. */
+char *ap_config_refresh_std(const char *json, int *changed);
+int ap_std_refresh_rows(cJSON *pids);
+
 /** In-place neutralization of EEPROM-writing user init commands
  *  (case-insensitive, whitespace-tolerant: "atsp6", "AT SP 6"):
  *  ATSP -> ATTP (same protocol switch, RAM only) and ATM1 -> ATM0
@@ -502,7 +528,7 @@ ap_bounds_verdict_t ap_bounds_apply(double *value, float min, float max,
 #define AP_SETS_HEADER    (1u << 0)  /* ATSH: the prelude's functional header */
 #define AP_SETS_FILTER    (1u << 1)  /* ATCRA / ATCM / ATCF: the prelude's ATCRA */
 #define AP_SETS_PROTOCOL  (1u << 2)  /* ATSP / ATTP: the prelude's ATTP<p>  */
-#define AP_SETS_PRINT     (1u << 3)  /* ATH1 / ATS0 / ATST: ATH0 ATS1 ATST96 */
+#define AP_SETS_PRINT     (1u << 3)  /* ATH0 / ATS0 / ATST: ATH1 ATS1 ATST96 */
 #define AP_SETS_EXT_ADDR  (1u << 4)  /* ATCEA / ATCER -> ATCEA              */
 #define AP_SETS_FLOW_CTL  (1u << 5)  /* ATFCSH / ATFCSD / ATFCSM -> ATFCSM0 */
 #define AP_SETS_FC_OFF    (1u << 6)  /* ATCFC0 -> ATCFC1                    */
@@ -527,6 +553,20 @@ unsigned ap_chain_sets(const char *chain);
  *  written (cap - 1 when it did not fit: AP_RESTORE_LEN always does). */
 size_t ap_chain_restore(unsigned sets, const char *prelude, char *out,
                         size_t cap);
+
+/** Drop from a chain of the tables the print-format commands the poller
+ *  cannot live with, as the legacy firmware did (its send_commands skipped
+ *  `ATH0`, `ATS0` and `ATE1`): autopid reads the chip with headers and
+ *  spaces on and the echo off, and a published profile's `ATS0` (the Mini
+ *  Cooper SE) or `ATH0` (the Ford profiles) would break every reply after
+ *  it. In place; spaces and case ignored; the separators tidied.
+ *  @return how many commands were dropped. PURE. */
+int ap_chain_strip_print(char *chain);
+
+/** The receive filter a chain sets (`ATCRA<id>`, the last one wins): the
+ *  id and whether it is 29-bit (8 hex digits). @return false when the chain
+ *  sets none, or resets it (a bare `ATCRA`) last. PURE. */
+bool ap_chain_cra_id(const char *chain, uint32_t *id, bool *is_29bit);
 
 /* ---- pure: bus guard (autopid_bus_guard.c, host-tested) -------------------
  * May the OBD chip transmit on a protocol, given what the native
@@ -607,15 +647,42 @@ const char *ap_bus_kind_name(ap_bus_kind_t kind);
 size_t ap_guard_reason(const ap_bus_t *bus, char proto, bool pinned,
                        char *out, size_t cap);
 
-/* ---- pure: ELM response text -> payload bytes (autopid_resp.c) ------------
+/* ---- pure: ELM response text -> bytes (autopid_resp.c) ---------------------
  * Handles: echo/blank/SEARCHING lines, error markers (NO DATA, ERROR,
  * STOPPED, ?), headers-off single line ("41 0C 1A F8"), headers-off
  * ISO-TP multi-line ("014" + "0: 49 02 .." + "1: .."), headers-on frames
  * ("7E8 06 41 00 ..") incl. ISO-TP single/first/consecutive reassembly
- * from the lowest-ID responder. Payload INCLUDES the service/PID echo
- * bytes: user expressions index from B0 = 0x41 (legacy semantics).   */
+ * from the lowest-ID responder, an extended address byte before the PCI
+ * ("607 F1 10 09 62 ..", the BMW scheme), the chip's four-token 29-bit id.
+ * The PAYLOAD is framing-free, from the service echo (B0 = 0x41): what the
+ * parsers (VIN, DTC, the detection) and the cross-talk guard read.      */
 esp_err_t ap_resp_to_payload(const char *resp, uint8_t *payload,
                              size_t payload_max, size_t *out_len);
+
+/** The reply as the chip prints it with headers on, which is what user
+ *  expressions index since 2026-10-24 (issue #1014; the legacy firmware's
+ *  parse_elm327_response() read the same bytes, so the published vehicle
+ *  profiles count this way): every line's bytes after the CAN id, the
+ *  ISO-TP PCI bytes and an extended address byte included, the lines of
+ *  the LOWEST responder id concatenated in arrival order, `7F xx 78`
+ *  response-pending frames dropped. The chip trims a single frame to its
+ *  length and prints consecutive frames whole, padding included. A reply
+ *  that arrives without ids (a K-line protocol, whose prelude keeps
+ *  headers off) is rebuilt into that shape from its rows: `0L` + the
+ *  bytes, or `1L LL` + six bytes then `2N` + seven per consecutive frame,
+ *  so `[B3:B4]/4` is the RPM on every protocol. PURE.
+ *  @return ESP_ERR_NOT_FOUND = no data line, ESP_FAIL = an error line. */
+esp_err_t ap_resp_frames(const char *resp, uint8_t *out, size_t out_max,
+                         size_t *out_len);
+
+/** How the tokenizer reads a 29-bit id printed as four byte tokens: the
+ *  legislated `18 DA F1 xx` is always taken (take_id29); with this hint a
+ *  row's own receive filter id (`ATCRA17FE007B`, the MEB profile) is taken
+ *  too, and on a 29-bit protocol any four tokens followed by a plausible
+ *  PCI. Set by the runner before a row's reply is parsed (the poller task)
+ *  and by the test route (the httpd task): never at once (the chip job).
+ *  0 / false = the legislated rule alone. */
+void ap_resp_set_id29_hint(uint32_t rx_id, bool proto29);
 
 #define AP_RESP_ECUS_MAX 8      /* 7E8..7EF: the functional-response set */
 

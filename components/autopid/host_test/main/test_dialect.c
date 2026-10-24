@@ -87,19 +87,20 @@ void test_dialect_expression_shift(void)
 {
     char buf[AP_EXPR_LEN];
 
-    /* EngineRPM in the table: bit_start 31, 16 bits, x0.25. `41 0C A B`
-       reads [B2:B3]; `62 F4 0C A B` reads one byte further */
+    /* EngineRPM in the table: bit_start 31, 16 bits, x0.25. The frame
+       `04 41 0C A B` reads [B3:B4]; `05 62 F4 0C A B` reads one byte
+       further (headers-on numbering, 2026-10-24) */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_shift(31, 16, 0.25, 0, 0,
                                                       buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B2:B3]*0.25", buf);
+    TEST_ASSERT_EQUAL_STRING("[B3:B4]*0.25", buf);
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_shift(31, 16, 0.25, 0, 1,
                                                       buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B3:B4]*0.25", buf);
+    TEST_ASSERT_EQUAL_STRING("[B4:B5]*0.25", buf);
 
     /* coolant: one byte with an offset */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_shift(31, 8, 1.0, -40, 1,
                                                       buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B3-40", buf);
+    TEST_ASSERT_EQUAL_STRING("B4-40", buf);
 
     /* placeholder rows and a negative shift are refused */
     TEST_ASSERT_EQUAL(ESP_ERR_NOT_SUPPORTED,

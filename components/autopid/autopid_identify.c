@@ -68,7 +68,9 @@ static esp_err_t ask(const id_io_t *io, const char *cmd, TickType_t timeout)
     return ap_be()->request(cmd, io->resp, io->len, timeout);
 }
 
-/** The responder set: headers on for ONE bitmap request, then off again. */
+/** The responder set: ONE bitmap request; the prelude's headers (on for
+ *  every CAN protocol since 2026-10-24, issue #1014) carry each ECU's id.
+ *  A K-line prelude keeps them off and the bitmaps merge into one row. */
 static void read_responders(const id_io_t *io, ap_dialect_t dialect,
                             ap_veh_seen_t *seen)
 {
@@ -76,8 +78,7 @@ static void read_responders(const id_io_t *io, ap_dialect_t dialect,
 
     seen->n_ecus = 0;
 
-    if (ap_dialect_pid_cmd(dialect, 0x00, cmd, sizeof(cmd)) == 0 ||
-        ask(io, "ATH1", AP_ID_AT_TIMEOUT) != ESP_OK)
+    if (ap_dialect_pid_cmd(dialect, 0x00, cmd, sizeof(cmd)) == 0)
     {
         return;
     }
@@ -87,12 +88,6 @@ static void read_responders(const id_io_t *io, ap_dialect_t dialect,
         seen->n_ecus = (uint8_t)ap_dialect_bitmaps(dialect, io->resp, 0x00,
                                                   seen->ecus,
                                                   AP_VEH_ECUS_MAX);
-    }
-
-    /* headers MUST be off again: every poll is parsed that way */
-    if (ask(io, "ATH0", AP_ID_AT_TIMEOUT) != ESP_OK)
-    {
-        (void)ask(io, "ATH0", AP_ID_AT_TIMEOUT);
     }
 }
 

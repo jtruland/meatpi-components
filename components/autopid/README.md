@@ -37,7 +37,8 @@ Decisions log there is authoritative; the big ones:
   in the `autopid` console command and INFO lines `paused: external OBD
   client active` / `resumed: external OBD client idle`. On resume the
   poller first re-sends the protocol prelude (`ap_std_prelude()`:
-  `ATS1;ATH0;ATST96;ATTP<p>;ATSH..;ATCRA`) and replays every type/PID
+  `ATS1;ATH1;ATST96;ATTP<p>;ATSH..;ATCRA` on CAN, headers on since
+  2026-10-24) and replays every type/PID
   init (`ap_runner_restore_baseline()`) - the app leaves the chip in ITS
   state, and Car Scanner's `ATS0` alone made every resumed poll fail to
   parse (bench: 110 failed polls, 0 ok, until the reboot). Side effects
@@ -107,7 +108,7 @@ Decisions log there is authoritative; the big ones:
 | `autopid_vehicle_switch.c` | the store's files: per-car tables copy/snapshot, the switch (snapshot, copy, live reload, SPECIFIC init, event), the new-car path with LRU eviction, first contact (`autopid_vehicle_seen`), the detection result (`autopid_vehicle_detected`) and the one-time `obd_chip_protocol_save()` |
 | `autopid_sched.c` | PURE scheduler: due times, group inheritance/override (`ap_sched_group_set`/`_restore`, 2026-09-17), fail backoff (×4 after 3), period-0 high-fidelity round-robin, stagger; `ap_sched_next_of()` picks among the entries of given classes (the poller asks for the chip's rows only while it may use the chip), a passive row at period 0 is looked at every 20 ms |
 | `autopid_group.c` | runtime group control: `autopid_group_set`/`_restore` (name lookup under the core lock + poller wake-up over the pure scheduler calls) and the group state JSON (split out of autopid.c 2026-09-17) |
-| `autopid_resp.c` | PURE ELM text → payload bytes (headers on/off, ISO-TP single/multi, lowest-responder rule, noise/error lines, the chip's 29-bit header print `18 DA F1 xx`, `7F xx 78` response-pending lines dropped) + the cross-talk guard (`ap_payload_matches_cmd`: a second chip master's response can't be cached as ours; service 22 is compared on both identifier bytes) |
+| `autopid_resp.c` | PURE ELM text → bytes: the framing-free payload for the parsers and the guard (`ap_resp_to_payload`: headers on/off, ISO-TP single/multi, lowest-responder rule, noise/error lines, an extended address byte before the PCI, the chip's 29-bit header print `18 DA F1 xx` and a row's own 29-bit id by hint, `7F xx 78` response-pending lines dropped) and the reply as the chip prints it with headers on for the expressions (`ap_resp_frames`, 2026-10-24, issue #1014; headers-off replies rebuilt into that shape, rows in arrival order) + the cross-talk guard (`ap_payload_matches_cmd`: a second chip master's response can't be cached as ours; service 22 is compared on both identifier bytes) |
 | `autopid_resp_filter.c` | PURE ATMA monitor lines → frame data bytes: `ap_filter_frame` (one line carrying the wanted id) and the incremental stream collector `ap_flt_stream_*` the filter window feeds; split out of `autopid_resp.c` 2026-10-02 (700-line rule) |
 | `autopid_config.c` | PURE JSON parse/validate + target file load/save (atomic) |
 | `autopid_cache.c` | latest-value slots (PSRAM, mutex), legacy snapshot + detail JSON, plus the **external-value table** (12 name-keyed injected samples: GPS from the ESPNetLink dongle) merged into every snapshot/get/detail |
@@ -470,7 +471,7 @@ every Mode 01 row that followed went to the gateway, which answered
 moving: nine rows frozen from the second cycle on the bench). The runner
 reads every chain it sends for what it sets beyond the baseline
 (`ap_chain_sets()`, pure) and before the next row TYPE puts the baseline
-back: the prelude (`ATS1;ATH0;ATST96;ATTP<p>;ATSH7DF;ATCRA`) plus one undo
+back: the prelude (`ATS1;ATH1;ATST96;ATTP<p>;ATSH7DF;ATCRA`) plus one undo
 command per thing the prelude does not cover (`ATCEA` for extended
 addressing, `ATFCSM0` for flow control, `ATAT1`, `ATCAF1`, `ATCP18`, `ATE0`,
 `ATL0`, `ATR1`, `ATV0;ATD0`), then the new type's init and the row's init as
@@ -504,8 +505,12 @@ this bus, `0100`, then `22F400` (0.6 s each when nobody answers).
 FOUR byte tokens (`18 DA F1 10 06 41 00 ..`). Until 2026-10-03 the parsers
 took such a line for data: detection kept a 29-bit OBD-II car's responders
 as one row without an id, and a DTC scan on any 29-bit car found "no ECU".
-`take_id29()` takes the four tokens as an id only for the legislated
-answers `18 DA F1 xx` followed by a PCI byte that fits the line.
+`take_id29()` takes the four tokens as an id for the legislated answers
+`18 DA F1 xx` followed by a PCI byte that fits the line, and since
+2026-10-24 (headers on for every poll) also for the id a row's own
+receive filter names (`ATCRA17FE007B`, the MEB profile) and, on a 29-bit
+protocol, for any four bytes followed by a whole frame: the runner tells
+the parser both before a reply is read (`ap_runner_reply_hint()`).
 
 **Trouble codes.** `dtc_protocol` = `obd` means "the legislated codes": on
 a `uds` car the scan and the clear take the WWH-OBD path
@@ -529,7 +534,7 @@ including the Sprinter VS30 of the field report (`--sprinter`).
     "name": "engine", "type": "std|custom|specific", "cmd": "010C",
     "init": "ATSH7E0", "rxheader": "7E8", "group": "driving",
     "period_ms": 0,
-    "parameters": [{"name": "rpm", "expression": "[B2:B3]/4",
+    "parameters": [{"name": "rpm", "expression": "[B3:B4]/4",
                     "unit": "rpm", "class": "frequency",
                     "min": 0, "max": 16384}]
   }],
@@ -569,11 +574,24 @@ answers: **~19 req/s total / 53 ms per request measured**, shared
 across all period-0 entries; numbers + guidance in
 [BENCHMARKS.md](BENCHMARKS.md)). Periods of 1–49 ms are accepted but
 flagged (`stats.sub_floor_pids`). A group named `default` always
-exists. Expressions index the
-payload INCLUDING the service/PID echo (B0 = 0x41 on mode-01): legacy
-profile expressions work unchanged. **Filter expressions index the
-frame DATA (B0 = first data byte, no id echo)**, also the legacy
-frame-of-reference.
+exists. **Expressions index the reply as the chip prints it with headers
+on** (2026-10-24, issue #1014): every frame's bytes after the CAN id, the
+ISO-TP framing bytes counted, so the RPM reply is `04 41 0C 1A F8` and
+reads `[B3:B4]/4`, a long reply `10 3E 62 01 01 .. / 21 .. / 22 ..` counts
+its `21`, `22` bytes, and a BMW reply behind extended addressing starts
+with its address byte (`F1 10 09 62 ..`). This is the legacy firmware's
+frame of reference (its `parse_elm327_response()` read the same lines), so
+the published vehicle profiles go in verbatim. The parsers (VIN, DTC,
+detection) and the cross-talk guard keep reading the framing-free payload
+(`ap_resp_to_payload()`, B0 = the service echo); the expressions get
+`ap_resp_frames()`. A `7F xx 78` response-pending frame is dropped (the
+legacy firmware counted it, which is how the i3 and Mini SOC rows came to
+read `[B11:B12]` for a SOC that sits at `[B6:B7]`). A reply that arrives
+without ids (a K-line protocol, whose prelude keeps headers off) is
+rebuilt into the same shape. `ATH0`, `ATS0` and `ATE1` in an init chain
+are dropped, as the legacy firmware dropped them. **Filter expressions
+index the frame DATA (B0 = first data byte, no id echo)**, also the legacy
+frame-of-reference, and a `PGN:` row's B0 is the first data byte.
 
 Table bounds (`autopid_private.h`): 32 groups, 512 PIDs, 128 filters,
 2048 parameters pooled across the table and **256 parameters per PID
@@ -590,8 +608,9 @@ The per-entry slice the poller copies per request lives in PSRAM
 A scheduled filter entry opens a bounded monitor window: `ATH1` +
 `ATCRA<id>`, MONITOR claim, `ATMA`, collect until a frame with the
 filter's CAN id arrives (or `monitor_ms` expires, 50..60000, default
-1000), SPACE stop, restore receive-all + headers-off, PID inits
-replayed. ONE captured frame updates all the filter's parameters. The
+1000), SPACE stop, restore receive-all (headers stay on, the CAN
+prelude's state since 2026-10-24), PID inits replayed. ONE captured frame
+updates all the filter's parameters. The
 window **holds the chip**: other masters' requests fail fast while it
 is open, so schedule filters sparsely (period_ms seconds apart, short
 windows). Chip "<DATA ERROR"-style markers after the data bytes are
@@ -631,17 +650,17 @@ the current one as `phase`):
    2026-10-03 this phase was the chip's own search, `ATTP0` + `0100` +
    `ATDPN`: 9.3 s to give up when nothing answers `0100`, and blind to a
    UDS-dialect vehicle.)
-2. `vin`: one headers-on bitmap request collects the responding ECU ids
-   + their support bitmaps (the fingerprint), headers off again right
-   after. Then the VIN: `0902` on an OBD-II car (ISO-TP joined by the
+2. `vin`: one bitmap request collects the responding ECU ids + their
+   support bitmaps (the fingerprint; the CAN prelude has headers on since
+   2026-10-24, nothing toggles them). Then the VIN: `0902` on an OBD-II car (ISO-TP joined by the
    chip, the lowest responder wins), falling back to `ATSH7E0`
    (`ATSH18DA10F1` on 29-bit) + UDS `22F190`; `22F802` asked of each ECU
    in turn on a UDS-dialect car, lowest id first. The functional header
    is restored afterwards.
 3. `pids`: the support bitmap walk mapped onto the built-in SAE table
    into ready-made config rows (names, units, classes, **generated
-   expressions** such as `[B2:B3]*0.25`). OBD-II: `0100/0120/../01A0`
-   with headers off, multi-ECU OR-merged. UDS dialect: `22F400` ..
+   expressions** such as `[B3:B4]*0.25`). OBD-II: `0100/0120/../01A0`
+   with headers on, multi-ECU OR-merged. UDS dialect: `22F400` ..
    `22F4E0` with headers on, every ECU's bitmaps kept apart, each row
    given to the lowest responder that has the PID. A PID the table knows
    by name only (no parameter to decode: `13`, `7A`, `85` ...) gets NO
@@ -760,7 +779,7 @@ refreshed when it changed.
 
 **First contact per boot** (the runner, after the first successful poll;
 with empty tables an idle probe sends one `0100` every 10 s until the
-check ran): the prelude, `0902`, `ATH1` + `0100` + `ATH0`, then
+check ran): the prelude, `0902`, `0100` (headers on), then
 `autopid_vehicle_seen()`:
 
 - the current car: `last_seen` touched (daily), a re-detected protocol
@@ -893,35 +912,40 @@ fix:
 The UI/app fetches `vehicle_profiles.json` (GitHub), the user picks a
 profile, and the client PUTs the converted table to
 `/api/autopid/config` (+ `vehicle`/init strings in settings). The
-firmware never fetches profiles. **Two conversion rules the importer
-MUST apply** (bench-verified against the published MEB profile):
+firmware never fetches profiles. **The rules the importer applies**
+(bench-verified against the published profiles):
 
-1. **Byte-index shift, right for single-frame replies only (bench-measured
-   2026-10-21)**: published profile expressions index the legacy frame of
-   reference, every byte after the CAN header with the PCI bytes included
-   (`parse_elm327_response()` in the legacy main/autopid.c): a single-frame
-   reply is `0L 41 05 xx` (`010C` RPM = `[B3:B4]`), a multi-frame reply
-   `10 LL 61 01 d0..d3 / 21 d4..d10 / 22 ..` (the Leaf ZE1's SOC reads
-   `B39` and `B41:B42`, skipping `B40`, the PCI of the fifth consecutive
-   frame). The v6 payload is the PCI-free assembly starting at the service
-   echo (B0 = 0x41/0x62), so the importer's shift of every `B<n>`/`S<n>`
-   index DOWN BY ONE (`[B2:B3]`) is right for a single-frame reply and
-   WRONG for a multi-frame one: the first frame's indexes land two too
-   high, every consecutive frame's one more. `tools/testbench/obd/
-   autopid_profile_e2e_bench.py` measured it on the Leaf ZE1 profile
-   (its four multi-frame PIDs decode exactly the shifted expression on
-   the PCI-free payload, the two single-frame ones decode right). Of the
-   370 published PIDs, 143 carry no response-count hint and index bytes
-   below 8 only, so an importer-side remap would guess for them; the
-   runner rebuilding the legacy frame view for imported rows from the
-   reply it actually got would not. Fix pending: `internal/
-   TASK_profile_frame_ref.md` in the app repo.
+1. **The expressions go in as published (2026-10-24, issue #1014).** The
+   published profiles index the legacy frame of reference: every frame's
+   bytes after the CAN id with the ISO-TP framing bytes counted
+   (`parse_elm327_response()` in the legacy main/autopid.c read the chip
+   with headers on): a single-frame reply is `0L 41 05 xx` (`010C` RPM =
+   `[B3:B4]`), a multi-frame reply `10 LL 61 01 d0..d3 / 21 d4..d10 /
+   22 ..` (the Kia Niro's SOC `B10/2` sits behind the `21`, the Leaf ZE1's
+   `B39` and `B41:B42` skip `B40`, the PCI of the fifth consecutive frame),
+   a BMW reply behind extended addressing starts with its address byte
+   (`F1 10 09 62 ..`, the M340d odometer `[B13:B15]`). Since 2026-10-24
+   the firmware reads every chip reply the same way (headers on for every
+   CAN protocol, `ap_resp_frames()`), so nothing is converted. Until then
+   the importer shifted every `B<n>`/`S<n>` index DOWN BY ONE, right for a
+   single-frame reply and WRONG for a multi-frame one (the first frame's
+   indexes two too high, every consecutive frame's one more):
+   `tools/testbench/obd/autopid_profile_e2e_bench.py` measured it on the
+   Leaf ZE1 profile (2026-10-21) and ConorIA's Kia Niro EV report (issue
+   #1014) confirmed it in a car. A device that imported a profile before
+   the change keeps the shifted rows until the car is imported again
+   (release notes, 6.0.0-beta.3); its standard rows are re-numbered where
+   the file is loaded (`ap_config_refresh_std()`: the table's current
+   expressions by `cmd` and parameter name, one W line, the file rewritten
+   once), because a car the store knows keeps its rows across detections.
 2. **Cross-type inits need no restoring prelude any more** (2026-10-20,
    issue #964): a specific PID whose init switches protocol/headers/CRA
    (`ATSP7;…;ATCRA…`) leaves the chip there, and the runner itself puts
    the baseline back before the next row type ("The baseline back"
    above). A `std_init` that pins the protocol (`ATSP6;ATCRA;ATH0`, the
-   old advice) still works; it is sent on top of the restored baseline.
+   old advice) still works; it is sent on top of the restored baseline,
+   its `ATH0` dropped (the poller reads headers on; `ATS0` and `ATE1` are
+   dropped the same way, as the legacy firmware did).
 3. **Parameter names must be unique across the whole table** (the
    value cache and every API key on them; the firmware refuses the
    table with `duplicate parameter name 'X'`). Profiles are community
@@ -940,15 +964,16 @@ MUST apply** (bench-verified against the published MEB profile):
    DM_F_RPM and ODOMETER decoded exactly from frames broadcast on 0x284,
    0x1DA and 0x5C5.
 
-**Replies over 16 rows are assembled in the wrong order (found
-2026-10-21):** the chip prints ISO-TP row indexes `0:` to `F:` and wraps;
-`assemble_headerless()` in autopid_resp.c concatenates the rows by that
-printed index, so the rows 16 and up of a reply interleave with 0 and up.
-The Leaf ZE1's 28-row cell-voltage DID `2102` decodes exactly the shifted
-expression on that re-ordered payload (54 of 54 values); the Toyota bZ4X
-`22181A2` and the Xpeng `221122` are the two other published replies over
-16 rows. Fix pending with the index rule above (rows in arrival order,
-the printed index only to detect a gap).
+**Replies over 16 rows were assembled in the wrong order (found
+2026-10-21, gone 2026-10-24):** with headers off the chip prints ISO-TP
+row indexes `0:` to `F:` and wraps, and `assemble_headerless()` in
+autopid_resp.c concatenated the rows by that printed index, so the rows
+16 and up of a reply interleaved with 0 and up (the Leaf ZE1's 28-row
+cell-voltage DID `2102`: 54 of 54 values wrong; the Toyota bZ4X `22181A2`
+and the Xpeng `221122` are the two other published replies over 16 rows).
+With headers on every frame is its own line in arrival order, and the
+headers-off fallback takes the rows in arrival order too, the printed
+index only telling a missing row.
 
 `POST /api/autopid/test` = try a profile PID before saving (same
 runner path: init chain, rxheader, expression, see HTTP_API §6e4).
@@ -973,7 +998,7 @@ it is what found the two defects above.
 
 ## Tests
 
-`host_test/` (run: `.\test.ps1 host autopid`, 137 tests): the bounds on a decoded value and the SAE rows inside their own range (`test_bounds.c`, 4 cases, 2026-10-20: the report's 100.000001646 clamped to 100 on a standard and on a custom row, the reporter's controlled values, the tolerance, a J1939 not-available raw dropped, the exact ratio and the signed span, every ranged table row decoded at 0x00 / 0xFF / 0x7F / 0x80 through the real parser inside its range); what a chain of the tables sets on the chip and the chain that puts the baseline back (`test_chain.c`, 4 cases, 2026-10-20: the BMW row of issue #964, the published i3 / Mini / e-Ulysse chains, the off and reset forms set nothing, every undo command fits `AP_RESTORE_LEN`); the detection's rows as a new car's tables, on or off (`test_scan_rows.c`, 3 cases, 2026-10-09); the J1939 rows
+`host_test/` (run: `.\test.ps1 host autopid`, 146 tests): the frame of reference of a reply (`test_frames.c`, 9 cases, 2026-10-24, issue #1014: a stored config's standard rows re-numbered to the table's expressions, a custom row and an unknown command left alone, a second pass a no-op; the chip's own prints from the bench, an extended-addressed BMW SME with a pending frame and padding, decoded as the published rows mean (`[B6:B7]/10` = 72.6 %, the i3's `[B11:B12]` shown to count the pending frame); a Hyundai Ioniq 2021 BMS reply of nine frames from a Car Scanner log (`B10/2` = 75 %, `[B19:B20]/10` = 341.9 V); a Leaf AZE0 reply with its padding kept; the MEB 29-bit print of issue #914 taken as an id by the row's filter or the protocol hint and left alone without; headers-off replies rebuilt into frames, the 28-row reply in arrival order, a missing row stopping the assembly; the lowest responder; ATH0/ATS0/ATE1 dropped from a chain and the receive filter a chain sets; the standard table's numbering); the bounds on a decoded value and the SAE rows inside their own range (`test_bounds.c`, 4 cases, 2026-10-20: the report's 100.000001646 clamped to 100 on a standard and on a custom row, the reporter's controlled values, the tolerance, a J1939 not-available raw dropped, the exact ratio and the signed span, every ranged table row decoded at 0x00 / 0xFF / 0x7F / 0x80 through the real parser inside its range); what a chain of the tables sets on the chip and the chain that puts the baseline back (`test_chain.c`, 4 cases, 2026-10-20: the BMW row of issue #964, the published i3 / Mini / e-Ulysse chains, the off and reset forms set nothing, every undo command fits `AP_RESTORE_LEN`); the detection's rows as a new car's tables, on or off (`test_scan_rows.c`, 3 cases, 2026-10-09); the J1939 rows
 (`test_j1939_rows.c`, 10 cases: the `PGN:` grammar and its refusals, the
 config parser's typed fields and the `init` / `rxheader` refusal, the
 scheduler's class-masked pick and the 20 ms passive floor, the built-in

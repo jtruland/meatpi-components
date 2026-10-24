@@ -23,8 +23,9 @@
 // Vendored from components/autopid_legacy/obd2_standard_pids.h (legacy
 // wican-fw) 2026-07-06 for autopid Phase 2: DATA ONLY, byte-identical
 // table. bit_start convention is legacy's headers-on buffer
-// [PCI, mode, PID, A, B, ...]: our payload drops the PCI, so
-// payload byte = bit_start/8 - 1 (see ap_std_expression). Rows with
+// [PCI, mode, PID, A, B, ...], which is what the expressions index again
+// since 2026-10-24 (issue #1014): byte = bit_start/8 (ap_std_expression;
+// the framing-free parsers subtract one, ap_frz_decode). Rows with
 // bit_start == 0 are placeholders (bit_length == 0) and are skipped.
 // Include from autopid_std.c ONLY (tables are static).
 #ifndef OBD2_PIDS_H

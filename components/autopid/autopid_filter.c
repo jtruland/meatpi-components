@@ -146,9 +146,7 @@ bool ap_runner_run_filter(const ap_filter_t *f, const ap_param_t *params)
     if (ap_be()->request(cmd, resp, sizeof(resp),
                          AP_FLT_SETUP_TIMEOUT) != ESP_OK)
     {
-        (void)ap_be()->request("ATH0", resp, sizeof(resp),
-                               AP_FLT_SETUP_TIMEOUT);
-        return false;
+        return false;   /* headers stay on: the CAN prelude's state */
     }
 
     bool got = false;
@@ -259,10 +257,9 @@ bool ap_runner_run_filter(const ap_filter_t *f, const ap_param_t *params)
 
     ap_be()->release();
 
-    /* restore the polling shape: receive-all + headers off */
+    /* restore the polling shape: receive-all (headers stay on, the CAN
+       prelude's state since 2026-10-24) */
     (void)ap_be()->request("ATCRA", resp, sizeof(resp),
-                           AP_FLT_SETUP_TIMEOUT);
-    (void)ap_be()->request("ATH0", resp, sizeof(resp),
                            AP_FLT_SETUP_TIMEOUT);
     ap_runner_reset();          /* replay PID inits on the next poll    */
 

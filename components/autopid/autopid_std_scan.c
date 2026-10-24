@@ -363,7 +363,7 @@ static void scan_task(void *arg)
     {
         seen.protocol[0] = proto;
         seen.protocol[1] = '\0';
-        /* the protocol's prelude for the rest (headers off, the
+        /* the protocol's prelude for the rest (headers on for CAN, the
            functional header, the receive filter cleared) */
         scan_send_prelude(ap_veh_prelude_for(proto));
 

@@ -32,8 +32,8 @@
  * ATFCSM1`), the standard rows that followed went there too, the gateway
  * answered `7F 01 11` and every Mode 01 value froze. The runner restores
  * the baseline before the next row type when a chain moved any of this.
- * The prelude (`ATS1;ATH0;ATST96;ATTP<p>;ATSH<functional>;ATCRA`) puts
- * back the print format, the protocol, the request header and the
+ * The prelude (`ATS1;ATH1;ATST96;ATTP<p>;ATSH<functional>;ATCRA` on CAN)
+ * puts back the print format, the protocol, the request header and the
  * receive filter; the rest needs a command of its own, listed below. The
  * commands come from what the published vehicle profiles use (2026-10-20:
  * ATST, ATSP, ATSH, ATFCSM/SD/SH, ATAT, ATCRA, ATH, ATE, ATS, ATCEA, ATL,
@@ -88,7 +88,8 @@ static const rule_t RULES[] =
     { "SP",    MATCH_ARG,   AP_SETS_PROTOCOL },
     { "TP",    MATCH_ARG,   AP_SETS_PROTOCOL },
     { "ST",    MATCH_ARG,   AP_SETS_PRINT },
-    { "H1",    MATCH_EXACT, AP_SETS_PRINT },
+    { "H0",    MATCH_EXACT, AP_SETS_PRINT },     /* headers are on   */
+    { "H1",    MATCH_EXACT, 0 },
     { "S0",    MATCH_EXACT, AP_SETS_PRINT },
     { "AT0",   MATCH_EXACT, AP_SETS_TIMING },
     { "AT2",   MATCH_EXACT, AP_SETS_TIMING },
@@ -238,4 +239,154 @@ size_t ap_chain_restore(unsigned sets, const char *prelude, char *out,
     }
 
     return (size_t)n;
+}
+
+/** One element of a chain, spaces dropped and upper-cased, into @p out
+ *  (cap - 1 characters at most). @return false when it did not fit. */
+static bool element_body(const char *p, size_t len, char *out, size_t cap)
+{
+    size_t n = 0;
+
+    for (size_t i = 0; i < len; i++)
+    {
+        char c = p[i];
+
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
+            continue;
+        }
+
+        if (n + 1 >= cap)
+        {
+            return false;
+        }
+
+        out[n++] = (char)toupper((unsigned char)c);
+    }
+
+    out[n] = '\0';
+    return true;
+}
+
+int ap_chain_strip_print(char *chain)
+{
+    static const char *const DROP[] = { "ATH0", "ATS0", "ATE1" };
+    int dropped = 0;
+
+    if (chain == NULL)
+    {
+        return 0;
+    }
+
+    char *w = chain;
+    const char *p = chain;
+
+    while (*p != '\0')
+    {
+        const char *e = p;
+
+        while (*e != '\0' && *e != ';')
+        {
+            e++;
+        }
+
+        size_t len = (size_t)(e - p);
+        bool had_sep = (*e == ';');
+        char body[8];
+        bool drop = false;
+
+        if (element_body(p, len, body, sizeof(body)))
+        {
+            for (size_t i = 0; i < sizeof(DROP) / sizeof(DROP[0]); i++)
+            {
+                if (strcmp(body, DROP[i]) == 0)
+                {
+                    drop = true;
+                    break;
+                }
+            }
+        }
+
+        if (drop)
+        {
+            dropped++;
+
+            /* the element goes with the separator after it; the last one,
+               without a separator, takes the one before it */
+            if (!had_sep && w > chain && w[-1] == ';')
+            {
+                w--;
+            }
+        }
+        else
+        {
+            memmove(w, p, len);
+            w += len;
+
+            if (had_sep)
+            {
+                *w++ = ';';
+            }
+        }
+
+        p = had_sep ? e + 1 : e;
+    }
+
+    *w = '\0';
+    return dropped;
+}
+
+bool ap_chain_cra_id(const char *chain, uint32_t *id, bool *is_29bit)
+{
+    bool found = false;
+
+    if (chain == NULL || id == NULL || is_29bit == NULL)
+    {
+        return false;
+    }
+
+    const char *p = chain;
+
+    while (*p != '\0')
+    {
+        const char *e = p;
+
+        while (*e != '\0' && *e != ';')
+        {
+            e++;
+        }
+
+        char body[CMD_MAX];
+
+        if (element_body(p, (size_t)(e - p), body, sizeof(body)) &&
+            strncmp(body, "ATCRA", 5) == 0)
+        {
+            const char *arg = body + 5;
+            size_t alen = strlen(arg);
+            bool hex = true;
+
+            for (size_t i = 0; i < alen; i++)
+            {
+                if (!isxdigit((unsigned char)arg[i]))
+                {
+                    hex = false;
+                }
+            }
+
+            if (alen == 0)
+            {
+                found = false;      /* a bare ATCRA: the filter reset */
+            }
+            else if (hex && (alen == 3 || alen == 8))
+            {
+                *id = (uint32_t)strtoul(arg, NULL, 16);
+                *is_29bit = (alen == 8);
+                found = true;
+            }
+        }
+
+        p = (*e == ';') ? e + 1 : e;
+    }
+
+    return found;
 }

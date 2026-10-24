@@ -331,22 +331,30 @@ char ap_veh_effective_protocol(const char *setting, const char *stored,
 
 const char *ap_veh_prelude_for(char proto)
 {
+    /* CAN protocols: headers ON (2026-10-24, issue #1014): every reply is
+       read as the chip prints it with the CAN id, which is what the user
+       expressions index (the legacy firmware's frame of reference, the
+       published profiles'), and what tells responders and extended-address
+       bytes apart. K-line and J1850 keep headers off: their printed header
+       is three bytes and a checksum, not an id, and ap_resp_frames()
+       rebuilds the ISO-TP shape from the plain bytes instead. */
     switch (proto)
     {
         /* CAN: pin protocol + functional header + clear the CRA filter */
-        case '6': return "ATS1;ATH0;ATST96;ATTP6;ATSH7DF;ATCRA";
-        case '7': return "ATS1;ATH0;ATST96;ATTP7;ATSH18DB33F1;ATCRA";
-        case '8': return "ATS1;ATH0;ATST96;ATTP8;ATSH7DF;ATCRA";
-        case '9': return "ATS1;ATH0;ATST96;ATTP9;ATSH18DB33F1;ATCRA";
-        /* non-CAN / J1939: protocol only */
+        case '6': return "ATS1;ATH1;ATST96;ATTP6;ATSH7DF;ATCRA";
+        case '7': return "ATS1;ATH1;ATST96;ATTP7;ATSH18DB33F1;ATCRA";
+        case '8': return "ATS1;ATH1;ATST96;ATTP8;ATSH7DF;ATCRA";
+        case '9': return "ATS1;ATH1;ATST96;ATTP9;ATSH18DB33F1;ATCRA";
+        /* J1939 and the user CAN protocols: protocol only, headers on */
+        case 'A': return "ATS1;ATH1;ATST96;ATTPA";
+        case 'B': return "ATS1;ATH1;ATST96;ATTPB";
+        case 'C': return "ATS1;ATH1;ATST96;ATTPC";
+        /* K-line / J1850: protocol only, headers off */
         case '1': return "ATS1;ATH0;ATST96;ATTP1";
         case '2': return "ATS1;ATH0;ATST96;ATTP2";
         case '3': return "ATS1;ATH0;ATST96;ATTP3";
         case '4': return "ATS1;ATH0;ATST96;ATTP4";
         case '5': return "ATS1;ATH0;ATST96;ATTP5";
-        case 'A': return "ATS1;ATH0;ATST96;ATTPA";
-        case 'B': return "ATS1;ATH0;ATST96;ATTPB";
-        case 'C': return "ATS1;ATH0;ATST96;ATTPC";
         default:  return "ATS1;ATH0;ATST96;ATTP0";
     }
 }

@@ -73,11 +73,9 @@ bool ap_scan_walk(ap_dialect_t dialect, cJSON *supported, uint16_t *found,
         return false;
     }
 
-    if (per_ecu && ask("ATH1", resp, resp_len, AP_WALK_AT_TIMEOUT) != ESP_OK)
-    {
-        return false;
-    }
-
+    /* the prelude's headers are on for every CAN protocol (2026-10-24,
+       issue #1014): a `uds` dialect's bitmaps come apart per ECU by their
+       ids without a toggle here */
     for (int range = 0; range < ap_dialect_ranges(dialect); range++)
     {
         uint8_t base = (uint8_t)(range * 0x20);
@@ -105,15 +103,6 @@ bool ap_scan_walk(ap_dialect_t dialect, cJSON *supported, uint16_t *found,
         if (!ap_dialect_table_more(tab, n_tab, range))
         {
             break;      /* next range not supported */
-        }
-    }
-
-    if (per_ecu)
-    {
-        /* headers MUST be off again: every poll is parsed that way */
-        if (ask("ATH0", resp, resp_len, AP_WALK_AT_TIMEOUT) != ESP_OK)
-        {
-            (void)ask("ATH0", resp, resp_len, AP_WALK_AT_TIMEOUT);
         }
     }
 

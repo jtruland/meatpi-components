@@ -127,8 +127,11 @@ void ap_veh_fingerprint(const ap_veh_ecu_t *ecus, size_t n,
 char ap_veh_effective_protocol(const char *setting, const char *stored,
                                bool search_fallback);
 
-/** The ';'-separated chip prelude for @p proto: ATS1;ATH0;ATST96;ATTP<p>
- *  plus the functional header + CRA clear for the CAN protocols 6..9. */
+/** The ';'-separated chip prelude for @p proto: ATS1;ATH<h>;ATST96;ATTP<p>
+ *  plus the functional header + CRA clear for the CAN protocols 6..9.
+ *  Headers are ON for every CAN protocol (6..9, A..C; 2026-10-24, issue
+ *  #1014: the replies are read as the chip prints them with the id) and
+ *  off for K-line / J1850 (1..5) and the auto search. */
 const char *ap_veh_prelude_for(char proto);
 
 /** 29-bit CAN protocols (7, 9, A..C). */

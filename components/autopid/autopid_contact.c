@@ -163,7 +163,7 @@ void ap_runner_force_search(void)
  * just answered (a poll: the stored car's); @p found_proto is the pinned
  * protocol a contact probe found the car on ('\0' = the one in effect).
  * Sends the prelude first so the reply set is deterministic (functional
- * header, CRA cleared, headers off) whatever the last PID left behind; the
+ * header, CRA cleared, the print format) whatever the last PID left behind; the
  * next poll replays its inits (ap_runner_reset).
  */
 static void identity_check(ap_dialect_t dialect, char found_proto)

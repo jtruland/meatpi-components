@@ -22,13 +22,24 @@
 
 /**
  * @file autopid_resp.c
- * @brief PURE: ELM327 response text -> payload bytes (host-tested).
+ * @brief PURE: ELM327 response text -> bytes (host-tested).
  *
  * Input is exactly what obd_chip_request() returns (echo + prompt already
- * stripped; '\r'/'\n' line endings preserved). Output is the byte payload
- * user expressions index into, INCLUDING the service/PID echo bytes
- * (B0 = 0x41 for a mode-01 response), matching the legacy evaluator's
- * frame-of-reference so published profile expressions keep working.
+ * stripped; '\r'/'\n' line endings preserved). Two outputs:
+ *
+ *   ap_resp_to_payload()  the framing-free PAYLOAD from the service echo
+ *                         (B0 = 0x41 for a mode-01 response): what the
+ *                         parsers (VIN, DTC, the detection) and the
+ *                         cross-talk guard read.
+ *   ap_resp_frames()      the reply AS THE CHIP PRINTS IT with headers on
+ *                         (every line's bytes after the CAN id, PCI and
+ *                         extended address bytes included, the lowest
+ *                         responder's lines in arrival order): what user
+ *                         expressions index since 2026-10-24 (issue
+ *                         #1014). The legacy firmware's
+ *                         parse_elm327_response() read the same bytes, so
+ *                         the published vehicle profiles count this way:
+ *                         `04 41 0C 1A F8` is the RPM reply, `[B3:B4]/4`.
  *
  * Accepted shapes (auto-detected per line):
  *   41 0C 1A F8                headers off, single frame
@@ -38,14 +49,27 @@
  *   7E8 10 14 49 02 01 ..      headers on, ISO-TP first (0x1L LL) +
  *   7E8 21 ..                  consecutive (0x2N): reassembled from the
  *                              LOWEST responder ID only (legacy rule)
+ *   607 F1 10 09 62 E5 CE ..   headers on, extended addressing: the target
+ *                              address byte before the PCI (take_ea)
  *   18 DA F1 58 07 62 F4 00 .. headers on, 29-bit: the chip prints the id
- *                              as FOUR byte tokens (bench 2026-10-03).
- *                              Only the legislated answers 18DAF1xx are
- *                              taken as an id (take_id29)
+ *                              as FOUR byte tokens (bench 2026-10-03). The
+ *                              legislated answers 18DAF1xx are taken as an
+ *                              id, and the row's own receive filter id or
+ *                              any id on a 29-bit protocol with the hint
+ *                              (ap_resp_set_id29_hint, 2026-10-24)
  *
  * A `7F <service> 78` line (response pending: the ECU needs more time and
  * the chip keeps waiting) is not an answer and is dropped wherever it
- * stands; the lines after it are.
+ * stands; the lines after it are. The legacy firmware counted such a
+ * frame into the bytes, which is why the i3 and Mini SOC rows of the
+ * published file read `[B11:B12]` where the answer alone puts the SOC at
+ * `[B6:B7]`.
+ *
+ * Headers off is the fallback (a K-line protocol's prelude keeps them
+ * off): ap_resp_frames() rebuilds the frames from the rows, taking them
+ * in ARRIVAL order (the chip prints `0:` to `F:` and wraps, so a reply
+ * over 16 rows repeats the index: ordering by it interleaved the rows 16..
+ * with 0.., the Leaf ZE1's 28-row reply, bench 2026-10-21).
  *
  * The line tokenizer (one chip line -> bytes, header, row index) lives in
  * autopid_resp_lines.c since 2026-10-03 (700-line rule); this file
@@ -157,13 +181,14 @@ static size_t assemble_header_frames(const ap_line_t *lines, int n_lines,
     for (int i = 0; i < n_lines; i++)
     {
         if (!lines[i].has_header || lines[i].header != header ||
-            lines[i].n == 0)
+            lines[i].n <= lines[i].ea)
         {
             continue;
         }
 
-        const uint8_t *b = lines[i].bytes;
-        size_t bn = lines[i].n;
+        /* behind the extended address byte when the line carries one */
+        const uint8_t *b = lines[i].bytes + lines[i].ea;
+        size_t bn = lines[i].n - lines[i].ea;
         uint8_t pci = b[0] >> 4;
         size_t start, count;
 
@@ -214,8 +239,8 @@ static size_t assemble_header_frames(const ap_line_t *lines, int n_lines,
     return n;
 }
 
-/** Headers-off assembly: ISO-TP rows in row order (trimmed to the bare
- *  length line) or plain concatenation. @return byte count. */
+/** Headers-off assembly: ISO-TP rows in arrival order (trimmed to the
+ *  bare length line) or plain concatenation. @return byte count. */
 static size_t assemble_headerless(const ap_line_t *lines, int n_lines,
                                   long iso_total, uint8_t *payload,
                                   size_t payload_max)
@@ -224,20 +249,33 @@ static size_t assemble_headerless(const ap_line_t *lines, int n_lines,
 
     if (lines[0].iso_index >= 0 || iso_total >= 0)
     {
-        /* headers off, ISO-TP rows: concatenate in row order */
-        for (int idx = 0; idx < n_lines; idx++)
+        /* headers off, ISO-TP rows: in ARRIVAL order. The printed index is
+           the ISO-TP sequence number, `0:` to `F:` and round again, so a
+           reply over 16 rows repeats it: ordering the rows BY that index
+           interleaved the rows 16.. with 0.. (the Leaf ZE1's 28-row
+           cell-voltage DID, bench 2026-10-21). It only tells a missing
+           row: the assembly stops at the first gap rather than decode
+           bytes that moved. */
+        int expect = 0;
+
+        for (int i = 0; i < n_lines; i++)
         {
-            for (int i = 0; i < n_lines; i++)
+            if (lines[i].iso_index < 0)
             {
-                if (lines[i].iso_index == idx)
-                {
-                    for (size_t j = 0; j < lines[i].n && n < payload_max;
-                         j++)
-                    {
-                        payload[n++] = lines[i].bytes[j];
-                    }
-                }
+                continue;       /* a stray plain line among the rows */
             }
+
+            if (lines[i].iso_index != (expect & 0x0F))
+            {
+                break;          /* a row is missing: what follows moved */
+            }
+
+            for (size_t j = 0; j < lines[i].n && n < payload_max; j++)
+            {
+                payload[n++] = lines[i].bytes[j];
+            }
+
+            expect++;
         }
 
         if (iso_total >= 0 && (size_t)iso_total < n)
@@ -306,6 +344,144 @@ esp_err_t ap_resp_to_payload(const char *resp, uint8_t *payload,
     {
         n = assemble_headerless(lines, n_lines, iso_total, payload,
                                 payload_max);
+    }
+
+    lines_unlock();
+
+    if (n == 0)
+    {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    *out_len = n;
+    return ESP_OK;
+}
+
+/* ap_resp_frames, headers off: copy what fits, keep counting */
+static size_t frames_put(uint8_t *out, size_t out_max, size_t n,
+                         const uint8_t *src, size_t count)
+{
+    for (size_t i = 0; i < count && n < out_max; i++)
+    {
+        out[n++] = src[i];
+    }
+
+    return n;
+}
+
+/** The frames the chip would have printed with headers on for a reply it
+ *  gave headers off (normal addressing): `0L` + the bytes for one that
+ *  fits a frame, else `1L LL` + six bytes then `2N` + seven per
+ *  consecutive frame, the last padded with 0x00 (the ECU's padding is not
+ *  in the rows). @return bytes written. */
+static size_t frames_from_payload(const uint8_t *payload, size_t len,
+                                  uint8_t *out, size_t out_max)
+{
+    size_t n = 0;
+
+    if (len == 0)
+    {
+        return 0;
+    }
+
+    if (len <= 7)
+    {
+        uint8_t pci = (uint8_t)len;
+
+        n = frames_put(out, out_max, n, &pci, 1);
+        return frames_put(out, out_max, n, payload, len);
+    }
+
+    uint8_t ff[2] =
+    {
+        (uint8_t)(0x10 | ((len >> 8) & 0x0F)), (uint8_t)(len & 0xFF),
+    };
+
+    n = frames_put(out, out_max, n, ff, 2);
+    n = frames_put(out, out_max, n, payload, 6);
+
+    static const uint8_t zeros[7] = { 0 };
+    size_t at = 6;
+    unsigned sn = 1;
+
+    while (at < len)
+    {
+        uint8_t pci = (uint8_t)(0x20 | (sn & 0x0F));
+        size_t take = len - at;
+
+        if (take > 7)
+        {
+            take = 7;
+        }
+
+        n = frames_put(out, out_max, n, &pci, 1);
+        n = frames_put(out, out_max, n, payload + at, take);
+        n = frames_put(out, out_max, n, zeros, 7 - take);
+        at += take;
+        sn++;
+    }
+
+    return n;
+}
+
+esp_err_t ap_resp_frames(const char *resp, uint8_t *out, size_t out_max,
+                         size_t *out_len)
+{
+    if (resp == NULL || out == NULL || out_len == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_len = 0;
+
+    lines_lock();
+
+    ap_line_t *lines = s_lines;
+    bool saw_error = false;
+    long iso_total = -1;
+    int n_lines = ap_resp_collect_lines(resp, lines, AP_MAX_LINES,
+                                        &saw_error, &iso_total);
+
+    if (saw_error || n_lines == 0)
+    {
+        lines_unlock();
+        return saw_error ? ESP_FAIL : ESP_ERR_NOT_FOUND;
+    }
+
+    size_t n = 0;
+
+    if (lines[0].has_header)
+    {
+        /* headers on: the LOWEST responder's lines, verbatim (PCI and
+           extended address bytes included), in arrival order */
+        uint32_t lowest = UINT32_MAX;
+
+        for (int i = 0; i < n_lines; i++)
+        {
+            if (lines[i].has_header && lines[i].header < lowest)
+            {
+                lowest = lines[i].header;
+            }
+        }
+
+        for (int i = 0; i < n_lines; i++)
+        {
+            if (lines[i].has_header && lines[i].header == lowest)
+            {
+                n = frames_put(out, out_max, n, lines[i].bytes, lines[i].n);
+            }
+        }
+    }
+    else
+    {
+        /* headers off (a K-line protocol's prelude, or a chip left so by
+           a reset): the framing-free payload, then the frames it would
+           have printed with headers on. Under the lines lock. */
+        static uint8_t s_flat[AP_PAYLOAD_MAX] EXT_RAM_BSS_ATTR;
+        size_t flat = assemble_headerless(lines, n_lines, iso_total, s_flat,
+                                          sizeof(s_flat));
+
+        n = frames_from_payload(s_flat, flat, out, out_max);
     }
 
     lines_unlock();

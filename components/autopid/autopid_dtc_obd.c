@@ -81,10 +81,16 @@ void ap_dtc_obd_prep(char *resp, size_t resp_len)
         {
             memcpy(one, p, len);
             one[len] = '\0';
-            ap_init_sanitize(one); /* spare the chip's EEPROM */
-            (void)ap_be()->request(one, resp, resp_len, AP_DTC_INIT_TIMEOUT);
+            ap_init_sanitize(one); /* spare the chip's EEPROM; an ATH0 or
+                                      ATS0 is dropped (an empty piece) */
 
-            if (ap_guard_cmd_resets(one, len))
+            if (one[0] != '\0')
+            {
+                (void)ap_be()->request(one, resp, resp_len,
+                                       AP_DTC_INIT_TIMEOUT);
+            }
+
+            if (ap_guard_cmd_resets(one, strlen(one)))
             {
                 /* the chip is back on its stored protocol: the one in
                    effect (the job asked the guard for it) goes out again */
@@ -96,8 +102,9 @@ void ap_dtc_obd_prep(char *resp, size_t resp_len)
     }
 
     /* headers ON for the scan window (after the user's init so it can't
-       be undone by accident): responses carry CAN ids, which is what
-       lets a functional scan keep EVERY responding ECU apart */
+       be undone by accident; the CAN prelude has them on since 2026-10-24,
+       a K-line one off): responses carry CAN ids, which is what lets a
+       functional scan keep EVERY responding ECU apart */
     (void)ap_be()->request("ATH1", resp, resp_len, AP_DTC_INIT_TIMEOUT);
 
     if (ap_dtc_cfg()->rxheader[0] != '\0')
@@ -111,15 +118,11 @@ void ap_dtc_obd_prep(char *resp, size_t resp_len)
 
 void ap_dtc_obd_done(char *resp, size_t resp_len)
 {
-    if (s_init_pinned)
-    {
-        /* the chip sits on dtc_init's protocol: the poller starts from its
-           own prelude again */
-        s_init_pinned = false;
-        ap_runner_baseline_invalidate();
-    }
-
-    (void)ap_be()->request("ATH0", resp, resp_len, AP_DTC_INIT_TIMEOUT);
+    /* the chip may sit on dtc_init's protocol, and headers went on for the
+       scan (the prelude of a K-line protocol keeps them off): the poller
+       starts from its own prelude again */
+    s_init_pinned = false;
+    ap_runner_baseline_invalidate();
 
     if (ap_dtc_cfg()->rxheader[0] != '\0')
     {

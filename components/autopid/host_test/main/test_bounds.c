@@ -91,64 +91,66 @@ void test_bounds_exact_full_scale_literal(void)
     char buf[AP_EXPR_LEN];
     double fscale = (double)0.3921568627f;  /* the table's percent scale */
 
-    /* a percent row: the ratio, so 0xFF decodes to exactly 100 */
+    /* the expressions count the frame as the chip prints it with headers
+       on, `03 41 2F FF` (2026-10-24, issue #1014). A percent row: the
+       ratio, so 0xFF decodes to exactly 100 */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 8, fscale, 0, 0,
                                                         100, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B2*100/255", buf);
+    TEST_ASSERT_EQUAL_STRING("B3*100/255", buf);
 
     /* AbsLoadValue: 16 bits, max 25700 */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 16, fscale, 0, 0,
                                                         25700, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B2:B3]*25700/65535", buf);
+    TEST_ASSERT_EQUAL_STRING("[B3:B4]*25700/65535", buf);
 
     /* a uds dialect's shift keeps the form */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 8, fscale, 0, 0,
                                                         100, 1, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B3*100/255", buf);
+    TEST_ASSERT_EQUAL_STRING("B4*100/255", buf);
 
     /* RPM: 65535 * 0.25 = 16383.75 is not the max 16384: the decimal stays */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 16, 0.25, 0, 0,
                                                         16384, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B2:B3]*0.25", buf);
+    TEST_ASSERT_EQUAL_STRING("[B3:B4]*0.25", buf);
 
     /* an offset row: unchanged */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 8, 1.0, -40, -40,
                                                         215, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B2-40", buf);
+    TEST_ASSERT_EQUAL_STRING("B3-40", buf);
 
     /* a fuel trim: 0.78125 is exact in binary and 99.21875 - (-100) is no
        integer: the decimal */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 8, 0.78125, -100,
                                                         -100, 99.21875, 0,
                                                         buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B2*0.78125-100", buf);
+    TEST_ASSERT_EQUAL_STRING("B3*0.78125-100", buf);
 
     /* no range: the plain literal, as before */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 8, fscale, 0, NAN,
                                                         NAN, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B2*0.3921568692", buf);
+    TEST_ASSERT_EQUAL_STRING("B3*0.3921568692", buf);
 
     /* a range below zero with no offset: two's complement (the evaporative
        system vapour pressure) */
     TEST_ASSERT_EQUAL(ESP_OK, ap_std_expression_bounded(31, 16, 0.25, 0,
                                                         -8192, 8192, 0, buf,
                                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[S2:S3]*0.25", buf);
+    TEST_ASSERT_EQUAL_STRING("[S3:S4]*0.25", buf);
 
-    /* the ratio decodes exactly through the real parser */
-    uint8_t ff[8] = { 0x41, 0x2F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    /* the ratio decodes exactly through the real parser, on the frame */
+    uint8_t ff[8] = { 0x03, 0x41, 0x2F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
     double v = 0;
 
-    TEST_ASSERT_EQUAL(ESP_OK, expression_parser_eval("B2*100/255", ff,
+    TEST_ASSERT_EQUAL(ESP_OK, expression_parser_eval("B3*100/255", ff,
                                                      sizeof(ff), 12.0, &v));
     TEST_ASSERT_EQUAL_DOUBLE(100.0, v);
-    TEST_ASSERT_EQUAL(ESP_OK, expression_parser_eval("[B2:B3]*25700/65535",
+    TEST_ASSERT_EQUAL(ESP_OK, expression_parser_eval("[B3:B4]*25700/65535",
                                                      ff, sizeof(ff), 12.0,
                                                      &v));
     TEST_ASSERT_EQUAL_DOUBLE(25700.0, v);

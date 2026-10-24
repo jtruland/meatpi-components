@@ -10,8 +10,9 @@
 
 #include "autopid_private.h"
 
-/* the baseline prelude of an 11-bit 500 kbit/s car (ap_veh_prelude_for) */
-#define PRELUDE6 "ATS1;ATH0;ATST96;ATTP6;ATSH7DF;ATCRA"
+/* the baseline prelude of an 11-bit 500 kbit/s car (ap_veh_prelude_for;
+   headers on since 2026-10-24, issue #1014) */
+#define PRELUDE6 "ATS1;ATH1;ATST96;ATTP6;ATSH7DF;ATCRA"
 
 /* the odometer row of issue #964 (a 2018 BMW 640i GT, the gateway behind
    extended addressing) */
@@ -76,12 +77,13 @@ void test_chain_reads_like_the_chip(void)
                           ap_chain_sets(" at sh 6f1 ; ; AT cea 60;"));
     TEST_ASSERT_EQUAL_HEX(AP_SETS_HEADER, ap_chain_sets("atsh7e0"));
 
-    /* the off / reset forms set nothing: they ARE the baseline */
+    /* the off / reset forms set nothing: they ARE the baseline (headers ON
+       since 2026-10-24, issue #1014: ATH1 is the baseline's) */
     TEST_ASSERT_EQUAL_HEX(0, ap_chain_sets("ATCEA"));
     TEST_ASSERT_EQUAL_HEX(0, ap_chain_sets("ATCRA"));
     TEST_ASSERT_EQUAL_HEX(0, ap_chain_sets("ATFCSM0"));
     TEST_ASSERT_EQUAL_HEX(0, ap_chain_sets("ATCFC1;ATCAF1;ATAT1;ATE0;ATL0;"
-                                           "ATR1;ATV0;ATD0;ATH0;ATS1"));
+                                           "ATR1;ATV0;ATD0;ATH1;ATS1"));
 
     /* the on forms do */
     TEST_ASSERT_EQUAL_HEX(AP_SETS_FC_OFF, ap_chain_sets("ATCFC0"));
@@ -93,7 +95,7 @@ void test_chain_reads_like_the_chip(void)
     TEST_ASSERT_EQUAL_HEX(AP_SETS_QUIET | AP_SETS_DLC,
                           ap_chain_sets("ATR0;ATV1"));
     TEST_ASSERT_EQUAL_HEX(AP_SETS_DLC, ap_chain_sets("ATD1"));
-    TEST_ASSERT_EQUAL_HEX(AP_SETS_PRINT, ap_chain_sets("ATH1"));
+    TEST_ASSERT_EQUAL_HEX(AP_SETS_PRINT, ap_chain_sets("ATH0"));
     TEST_ASSERT_EQUAL_HEX(AP_SETS_PRINT, ap_chain_sets("ATST32"));
     TEST_ASSERT_EQUAL_HEX(AP_SETS_FILTER, ap_chain_sets("ATCM7FF;ATCF7E8"));
     TEST_ASSERT_EQUAL_HEX(AP_SETS_EXT_ADDR, ap_chain_sets("ATCERF1"));
@@ -135,10 +137,10 @@ void test_chain_restore_builds(void)
                    AP_SETS_FC_OFF | AP_SETS_TIMING | AP_SETS_RAW |
                    AP_SETS_PRIORITY | AP_SETS_ECHO | AP_SETS_LINEFEED |
                    AP_SETS_QUIET | AP_SETS_DLC;
-    const char *prelude9 = "ATS1;ATH0;ATST96;ATTP9;ATSH18DB33F1;ATCRA";
+    const char *prelude9 = "ATS1;ATH1;ATST96;ATTP9;ATSH18DB33F1;ATCRA";
 
     n = ap_chain_restore(all, prelude9, out, sizeof(out));
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP9;ATSH18DB33F1;ATCRA;"
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTP9;ATSH18DB33F1;ATCRA;"
                              "ATCEA;ATFCSM0;ATCFC1;ATAT1;ATCAF1;ATCP18;"
                              "ATE0;ATL0;ATR1;ATV0;ATD0", out);
     TEST_ASSERT_EQUAL(strlen(out), n);

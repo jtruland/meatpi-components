@@ -176,6 +176,11 @@ void ap_init_sanitize(char *str)
     if (str != NULL)
     {
         (void)obd_chip_guard_cmd(str, strlen(str));
+
+        /* and the print-format commands the legacy firmware dropped from
+           every init (ATH0 / ATS0 / ATE1): the poller reads the chip with
+           headers and spaces on (2026-10-24, issue #1014) */
+        (void)ap_chain_strip_print(str);
     }
 }
 
@@ -558,6 +563,27 @@ esp_err_t autopid_config_load(ap_config_t *cfg)
         ESP_LOGW(TAG, "config file: %d repeated parameter name%s made unique "
                       "(_2, _3, ...) and the file rewritten",
                  renamed, renamed == 1 ? "" : "s");
+        free(buf);
+        buf = fixed;
+        got = strlen(buf);
+        (void)filesystem_write(AP_CONFIG_PATH, buf, got);
+    }
+
+    /* the standard rows stored by a build before 2026-10-24 count the
+       framing-free payload; the expressions count the frame as the chip
+       prints it since (issue #1014), and a car the store knows keeps its
+       rows across detections: the table's current expressions, rewritten
+       once (change-guarded: a file already up to date writes nothing) */
+    int renumbered = 0;
+
+    fixed = ap_config_refresh_std(buf, &renumbered);
+
+    if (fixed != NULL)
+    {
+        ESP_LOGW(TAG, "config file: %d standard-row expression%s re-numbered "
+                      "to the frame as the chip prints it and the file "
+                      "rewritten",
+                 renumbered, renumbered == 1 ? "" : "s");
         free(buf);
         buf = fixed;
         got = strlen(buf);

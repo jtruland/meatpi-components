@@ -58,6 +58,7 @@
  * it is sent and before every request that goes out on it (row_pins_ok).
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -91,7 +92,37 @@ void ap_runner_set_type_init(int type, const char *init)
     {
         snprintf(s_type_init[type], sizeof(s_type_init[type]), "%s",
                  (init != NULL) ? init : "");
+        /* as a row's init: no EEPROM write, and the print-format commands
+           the poller cannot live with dropped (the old `std_init` advice
+           ended in ATH0) */
+        ap_init_sanitize(s_type_init[type]);
     }
+}
+
+void ap_runner_reply_hint(const char *type_init, const char *init,
+                          const char *rxheader)
+{
+    /* how a 29-bit id in the reply is read (ap_resp_set_id29_hint): the
+       row's receive filter (its rxheader, else an ATCRA in its init, else
+       one in its type's init), and whether the protocol in effect, the one
+       a chain of the tables pinned or the baseline's, is 29-bit */
+    uint32_t id = 0;
+    bool ext = false;
+
+    if (rxheader != NULL && strlen(rxheader) == 8)
+    {
+        id = (uint32_t)strtoul(rxheader, NULL, 16);
+    }
+    else if (!(ap_chain_cra_id(init, &id, &ext) && ext) &&
+             !(ap_chain_cra_id(type_init, &id, &ext) && ext))
+    {
+        id = 0;
+    }
+
+    const ap_base_mem_t *mem = ap_base_mem();
+    char proto = (mem->init_pin != '\0') ? mem->init_pin : ap_base_proto();
+
+    ap_resp_set_id29_hint(id, ap_veh_proto_is_29bit(proto));
 }
 
 void ap_runner_reset(void)
@@ -443,6 +474,8 @@ bool ap_runner_run(const ap_pid_t *pid, int pid_index,
     uint8_t payload[AP_PAYLOAD_MAX];
     size_t payload_len = 0;
 
+    ap_runner_reply_hint(s_type_init[pid->type], pid->init, pid->rxheader);
+
     if (ap_resp_to_payload(resp, payload, sizeof(payload), &payload_len)
             != ESP_OK)
     {
@@ -459,6 +492,18 @@ bool ap_runner_run(const ap_pid_t *pid, int pid_index,
         return false;
     }
 
-    return ap_runner_publish(pid, params, payload, payload_len,
+    /* the bytes the row's expressions index: the reply as the chip
+       printed it, headers on (the legacy frame of reference, the published
+       profiles'; 2026-10-24, issue #1014). Poller-task only. */
+    static uint8_t s_frames[AP_FRAMES_MAX] EXT_RAM_BSS_ATTR;
+    size_t n_frames = 0;
+
+    if (ap_resp_frames(resp, s_frames, sizeof(s_frames), &n_frames) != ESP_OK)
+    {
+        ESP_LOGD(TAG, "%s: no frames in response", pid->name);
+        return false;
+    }
+
+    return ap_runner_publish(pid, params, s_frames, n_frames,
                              esp_timer_get_time());
 }

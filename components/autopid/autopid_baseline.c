@@ -197,7 +197,7 @@ bool ap_base_send_baseline(ap_tr_t *tr)
 
 void ap_runner_restore_baseline(void)
 {
-    /* the app's ATZ/ATS0/ATH1/ATSH/ATCRA are all still in effect: put
+    /* the app's ATZ/ATS0/ATH0/ATSH/ATCRA are all still in effect: put
        back what the parser and the std PIDs assume (the same prelude
        the std scan uses - ATTP not ATSP, so no EEPROM write), then let
        the next poll replay the configured type/PID inits on top. A

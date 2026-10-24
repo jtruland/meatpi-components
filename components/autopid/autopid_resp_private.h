@@ -47,6 +47,8 @@ typedef struct
     int      iso_index;   /* "N:" row index, -1 = none                    */
     long     bare_value;  /* whole line was ONE hex token (length line)   */
     bool     is_bare;
+    uint8_t  ea;          /* 1 = bytes[0] is an extended address byte (the
+                             BMW scheme, headers on): the PCI follows it  */
 } ap_line_t;
 
 /** Tokenize raw chip text into parsed data lines (noise and `7F xx 78`

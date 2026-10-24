@@ -36,6 +36,9 @@ void run_scan_rows_tests(void);
 void run_chain_tests(void);
 /* test_bounds.c: a parameter's min / max on a decoded value (issue #1004) */
 void run_bounds_tests(void);
+/* test_frames.c: the reply as the chip prints it with headers on, what the
+   expressions index (issue #1014); extended addressing, the 29-bit hint */
+void run_frames_tests(void);
 
 /* ---- helpers ----------------------------------------------------------------- */
 
@@ -678,29 +681,31 @@ void test_std_expression_mapping(void)
 {
     char buf[AP_EXPR_LEN];
 
-    /* EngineRPM: bit_start 31, 16 bits, x0.25 -> [B2:B3]*0.25 */
+    /* the frame as the chip prints it with headers on, `04 41 0C 1A F8`
+       (2026-10-24, issue #1014): EngineRPM, bit_start 31, 16 bits, x0.25
+       -> [B3:B4]*0.25 */
     TEST_ASSERT_EQUAL(ESP_OK,
                       ap_std_expression(31, 16, 0.25, 0, buf,
                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B2:B3]*0.25", buf);
+    TEST_ASSERT_EQUAL_STRING("[B3:B4]*0.25", buf);
 
-    /* CoolantTemp: 8 bits, offset -40 -> B2-40 */
+    /* CoolantTemp: 8 bits, offset -40 -> B3-40 */
     TEST_ASSERT_EQUAL(ESP_OK,
                       ap_std_expression(31, 8, 1.0, -40, buf,
                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B2-40", buf);
+    TEST_ASSERT_EQUAL_STRING("B3-40", buf);
 
     /* OxySensor STFT: second data byte, scale AND offset */
     TEST_ASSERT_EQUAL(ESP_OK,
                       ap_std_expression(39, 8, 0.78125, -100, buf,
                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("B3*0.78125-100", buf);
+    TEST_ASSERT_EQUAL_STRING("B4*0.78125-100", buf);
 
     /* support bitmap: 32 bits raw */
     TEST_ASSERT_EQUAL(ESP_OK,
                       ap_std_expression(31, 32, 1.0, 0, buf,
                                         sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("[B2:B5]", buf);
+    TEST_ASSERT_EQUAL_STRING("[B3:B6]", buf);
 
     /* placeholder rows are refused */
     TEST_ASSERT_EQUAL(ESP_ERR_NOT_SUPPORTED,
@@ -948,10 +953,11 @@ void test_init_sanitize(void)
     TEST_ASSERT_EQUAL(ESP_OK, ap_config_parse(ok, &cfg, err, sizeof(err)));
     TEST_ASSERT_EQUAL_STRING("ATTP6;ATM0", cfg.pids[0].init);
 
-    /* the Renault Zoe profile init, verbatim */
+    /* the Renault Zoe profile init: ATSP rewritten, and its ATS0 dropped
+       (the poller reads headers and spaces on; 2026-10-24, issue #1014) */
     strcpy(buf, "ATE0;ATH1;ATSP7;ATS0;ATM0;ATAT1;ATFCSM1;ATCP18;");
     ap_init_sanitize(buf);
-    TEST_ASSERT_EQUAL_STRING("ATE0;ATH1;ATTP7;ATS0;ATM0;ATAT1;ATFCSM1;"
+    TEST_ASSERT_EQUAL_STRING("ATE0;ATH1;ATTP7;ATM0;ATAT1;ATFCSM1;"
                              "ATCP18;", buf);
 
     /* non-matches untouched: ATS1 (spaces), ATSH (headers), ATTP */
@@ -2073,6 +2079,7 @@ void app_main(void)
     run_scan_rows_tests();
     run_chain_tests();
     run_bounds_tests();
+    run_frames_tests();
 
     UNITY_END();
 }

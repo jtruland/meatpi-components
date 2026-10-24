@@ -307,14 +307,16 @@ void test_veh_effective_protocol_and_prelude(void)
     TEST_ASSERT_EQUAL('0', ap_veh_effective_protocol("0", "D", false));
     TEST_ASSERT_EQUAL('0', ap_veh_effective_protocol("0", "0", false));
 
-    /* the legacy map for 6..9, protocol-only for the rest */
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP6;ATSH7DF;ATCRA",
+    /* the legacy map for 6..9 with headers ON (2026-10-24, issue #1014:
+       the replies are read as the chip prints them with the id),
+       protocol-only for the rest; K-line and the search keep headers off */
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTP6;ATSH7DF;ATCRA",
                              ap_veh_prelude_for('6'));
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP7;ATSH18DB33F1;ATCRA",
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTP7;ATSH18DB33F1;ATCRA",
                              ap_veh_prelude_for('7'));
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP8;ATSH7DF;ATCRA",
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTP8;ATSH7DF;ATCRA",
                              ap_veh_prelude_for('8'));
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP9;ATSH18DB33F1;ATCRA",
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTP9;ATSH18DB33F1;ATCRA",
                              ap_veh_prelude_for('9'));
     TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP0",
                              ap_veh_prelude_for('0'));
@@ -322,7 +324,7 @@ void test_veh_effective_protocol_and_prelude(void)
                              ap_veh_prelude_for('\0'));
     TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTP3",
                              ap_veh_prelude_for('3'));
-    TEST_ASSERT_EQUAL_STRING("ATS1;ATH0;ATST96;ATTPA",
+    TEST_ASSERT_EQUAL_STRING("ATS1;ATH1;ATST96;ATTPA",
                              ap_veh_prelude_for('A'));
 
     TEST_ASSERT_TRUE(ap_veh_proto_is_29bit('7'));
