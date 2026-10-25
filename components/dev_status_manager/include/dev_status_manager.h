@@ -43,6 +43,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "dev_status_usb.h"
+#include "dev_status_sd.h"
 #include "freertos/event_groups.h"
 
 #ifdef __cplusplus
@@ -309,6 +310,20 @@ void dev_status_manager_set_usb_provider(dev_status_usb_provider_t fn);
 /** The summary now: false when there is no provider or nothing is on the
  *  connector (@p out zeroed, kind NONE). */
 bool dev_status_manager_usb(dev_status_usb_t *out);
+
+/* ---- the SD slot summary (2026-10-25) --------------------------------------- */
+
+/* The types: dev_status_sd.h. What card is in the slot and whether WiCAN
+ * can read it (`sd` on GET /api/status, absent while the slot is empty),
+ * for the web UI's notice bar and the pages that mention the card. The
+ * composition root provides it from external_storage. */
+
+/** The one provider (main's), asked per status request; NULL = no `sd`. */
+void dev_status_manager_set_sd_provider(dev_status_sd_provider_t fn);
+
+/** The summary now: false when there is no provider or no card in the
+ *  slot (@p out zeroed). */
+bool dev_status_manager_sd(dev_status_sd_t *out);
 
 #ifdef __cplusplus
 }

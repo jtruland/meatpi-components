@@ -140,7 +140,10 @@ function copiesCard(st,repaintAll,autoRows){
     const words=h("div",{},h("b",{style:"font-size:13.5px"},title),h("div",{class:"help"},held?"Holding the settings from before the factory reset"+(data.held_since?" of "+day(data.held_since):"")+". Restore to undo the reset, or refresh the copies to let them follow the device again.":sub));
     let right;
     if(!data||!data.present){
-      right=h("div",{class:"help",style:"text-align:right;max-width:200px"},data&&data.card===false?"No SD card in the slot":"No copy yet");
+      /* a card in the slot WiCAN cannot read (2026-10-25): the chip and the page's format dialog */
+      const bad=data&&data.card===false&&data.unreadable?data.unreadable:null;
+      right=bad?h("div",{class:"rowflex",style:"gap:10px;justify-content:flex-end;align-items:center"},chip(bad.state==="failed"?"not answering":"not readable",bad.state==="failed"?"crit":"warn"),bad.state==="failed"?null:sdFormatLink())
+        :h("div",{class:"help",style:"text-align:right;max-width:200px"},data&&data.card===false?"No SD card in the slot":"No copy yet");
     }else{
       const heldChip=held?chip("held","warn"):null;
       if(heldChip)heldChip.classList.add("bk-held-chip");
@@ -157,11 +160,16 @@ function copiesCard(st,repaintAll,autoRows){
   }
   function paint(){
     const c=cur();
-    const sd=c.sd||{};
+    const sd=Object.assign({},c.sd||{});
     const other=sd.device_id&&sd.device_id!==st.device_id;
+    /* the slot holds a card WiCAN cannot read (2026-10-25): the status poll's `sd` summary */
+    const sdx=!sd.card&&typeof sdSummary==="function"?sdSummary():null;
+    sd.unreadable=sdx&&(sdx.state==="unreadable"||sdx.state==="failed")?sdx:null;
     rows.replaceChildren(
       placeRow("Internal flash","Survives a factory reset: restore from it to undo one.",c.internal,"internal"),
-      placeRow("SD card",sd.card?(other?"This card came from another WiCAN ("+sd.device_id+"): restore from it to take its configuration over.":"Move the card to a replacement WiCAN and restore from it there."+(sd.free_bytes?" "+kb(sd.free_bytes)+" free.":"")):"Insert a card to keep a copy you can move to another WiCAN.",sd,"sd"));
+      placeRow("SD card",sd.card?(other?"This card came from another WiCAN ("+sd.device_id+"): restore from it to take its configuration over.":"Move the card to a replacement WiCAN and restore from it there."+(sd.free_bytes?" "+kb(sd.free_bytes)+" free.":""))
+        :sd.unreadable?(sd.unreadable.state==="failed"?"The card in the slot does not answer. Take it out and put it back in.":"The card in the slot is not readable yet. Format it to keep a copy here that can move to another WiCAN.")
+        :"Insert a card to keep a copy you can move to another WiCAN.",sd,"sd"));
     key.paint();
     keyNudge.style.display=key.downloaded()?"none":"";
   }

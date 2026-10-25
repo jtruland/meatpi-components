@@ -146,6 +146,28 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     }
 
+    /* the SD slot summary (2026-10-25): what card is in and whether WiCAN
+       can read it, for the notice bar and the pages that mention the card;
+       absent while the slot is empty */
+    dev_status_sd_t sd;
+
+    if (dev_status_manager_sd(&sd))
+    {
+        cJSON *s = cJSON_AddObjectToObject(resp, "sd");
+
+        if (s != NULL)
+        {
+            char serial[12];
+
+            snprintf(serial, sizeof(serial), "%08lx", (unsigned long)sd.serial);
+            cJSON_AddStringToObject(s, "state", sd.state);
+            cJSON_AddStringToObject(s, "reason", sd.reason);
+            cJSON_AddStringToObject(s, "name", sd.name);
+            cJSON_AddNumberToObject(s, "capacity_bytes", (double)sd.capacity_bytes);
+            cJSON_AddStringToObject(s, "serial", serial);
+        }
+    }
+
     /* memory health (Architecture §12b): internal is the scarce heap;
        largest_block vs free is THE fragmentation signal. This route is
        polled (the web UI: every 3 s), so the PSRAM heap is not walked for

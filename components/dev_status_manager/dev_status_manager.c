@@ -650,3 +650,26 @@ bool dev_status_manager_usb(dev_status_usb_t *out)
     }
     return out->kind != DEV_STATUS_USB_NONE;
 }
+
+/* ---- the SD slot summary (2026-10-25) ------------------------------------- */
+
+static dev_status_sd_provider_t s_sd_provider;
+
+void dev_status_manager_set_sd_provider(dev_status_sd_provider_t fn)
+{
+    s_sd_provider = fn;
+}
+
+bool dev_status_manager_sd(dev_status_sd_t *out)
+{
+    if (out == NULL)
+    {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (s_sd_provider == NULL)
+    {
+        return false;
+    }
+    return s_sd_provider(out);
+}

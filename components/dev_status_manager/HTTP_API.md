@@ -53,7 +53,7 @@ image identity, and reboot counters (the latter come from `restart_tracker`).
   the drive). Distinguish from `*_enabled`, which tracks the running state.
 - `network_connected` is the `DEV_STATUS_NETWORK_CONNECTED_MASK` convenience
   (STA **or** ETH).
-- Poll-friendly: cheap snapshot, no side effects. Suggested UI cadence 1–2 s.
+- Poll-friendly: cheap snapshot, no side effects. Suggested UI cadence 1 to 2 s.
 - **`memory`** (added 2026-07-04, Architecture §12b): both heaps,
 
 ```json
@@ -91,6 +91,20 @@ image identity, and reboot counters (the latter come from `restart_tracker`).
   modem). The composition root provides the object
   (`dev_status_manager_set_usb_provider`); the kind follows the wizard's
   own rule for what is on the connector.
+- **`sd`** (added 2026-10-25): the SD slot, for the notice bar and the
+  pages that mention the card, on the same poll; absent while the slot is
+  empty. `state` is external_storage's word (`mounted`, `unreadable`,
+  `failed`, `formatting`), `reason` what an unreadable card holds (`exfat`,
+  `ntfs`, `blank`, `gpt`, `unknown`, `fat_corrupt`) or, for a card that does
+  not answer, the esp_err name; `name` and `capacity_bytes` are the card's
+  (empty and 0 when it never answered), `serial` the CID serial as 8 hex
+  characters (the UI's "Not now" is per card). The full state, and the
+  format, are `GET /api/sdcard` (`external_storage/HTTP_API.md`).
+
+```json
+"sd": {"state":"unreadable","reason":"exfat","name":"SD64G",
+       "capacity_bytes":63864569856,"serial":"6b2f91a4"}
+```
 
 ## GET /api/info
 

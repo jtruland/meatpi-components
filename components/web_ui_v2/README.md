@@ -644,6 +644,50 @@ no long dash. Mock: `/api/backup/*` in `mock_api.js` with
 `inspectAs`: `plain_this | enc_other | redacted | newer | v1`). Probe:
 `probe_backup.mjs` (`BACKUP PROBE PASS`, 44 checks, plain and `--min`).
 
+### The SD card format (2026-10-25)
+
+A card in the slot WiCAN cannot read (exFAT, the factory format of every
+card over 32 GB; NTFS; a blank card; a damaged boot sector) used to read
+"Not mounted" and "Insert an SD card" everywhere. The status poll's `sd`
+summary (`dev_status_manager/HTTP_API.md`) now tells the pages what is in
+the slot, and `GET /api/sdcard` + `POST /api/sdcard/format`
+(`external_storage/HTTP_API.md`) let the user format it from the page:
+
+- **The bar** (`#sdbar`, the ESPNetLink bar's twin under the header on
+  every page but Quick Setup; `paintSdBar()` from the status poll and the
+  router): the lead names the problem ("SD card inserted, but WiCAN cannot
+  read it." / "but it has no filesystem." / "but it does not answer."), the
+  sentence what the card holds with its size and what a format does, then
+  **Format the card…** (the dialog) and **Not now** (per card and state, in
+  this browser: `localStorage wican-sd-seen` = `<serial>:<state>`). A card
+  that does not answer paints the bar red with OK only: no format can help
+  it.
+- **The dialog** (`sdFormatDialog()`, shared by every entry point): ask
+  (the card, what was found, what the result is, the erase warning, **Yes,
+  format it** as the danger action), the words (`#sd-phrase`, Continue off
+  until `format sdcard` is typed, case and spacing ignored; the page posts
+  the canonical phrase), the progress (the device answers 202 at once; the
+  page polls `GET /api/sdcard` once a second, no backdrop close), the
+  outcome (SD card ready: mounted at /sd, FAT32, the free space, the time
+  it took, Open File Manager; or The format failed with the error and Try
+  again). A card pulled out mid-way closes the dialog with a toast.
+- **The words elsewhere**: the Status page's SD card row (`sdRowValue()`:
+  "Inserted, exFAT: not readable" + Format…; "Inserted, not answering" + the
+  error), the File Manager's SD card tile (`files.js`: the chip, the card
+  and what it holds, a Format… button at the right; a dead card greyed
+  out), the Logger's chips ("Not recording" + "SD card inserted, not
+  readable" + Format the card…) and its empty file list, the backup copies
+  row (`backup.js`: "not readable" + Format…).
+
+Rules kept: nothing is formatted without the typed words, a mounted card is
+never offered (the route refuses it too), action buttons at the right edge,
+no long dash. Mock: `__mockPreset.sd` = `mounted` (default) | `exfat` |
+`exfat_failfmt` | `blank` | `unknown` | `failed` | `absent`,
+`__mockPreset.sdFormatMs`; `__mockSd()` for the probes. Probe:
+`probe_sdcard.mjs` (`SD CARD PROBE PASS`, 44 checks, plain and `--min`).
+Design record: `test-reports/logs/sdformat_20261025/` (the override over a
+copy of the preview, the shots, the review page).
+
 ## On-demand page chunks (2026-09-07)
 
 The main page must not grow (meatpi: "we cannot increase the size of the

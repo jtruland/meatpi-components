@@ -139,14 +139,24 @@ PAGES.__files=async(view)=>{
       const info=infos[i];
       const mounted=!(m.bit&&S.bits&&S.bits[m.bit]===false)&&!!(info&&info.total);
       const pct=mounted?info.used/info.total*100:0;
-      const card=h("div",{class:"fm-mount"+(mounted?"":" off"),role:"button",title:mounted?"Open "+m.path:m.name+" is not available",
-          onclick:()=>{if(mounted)go(m.path);else toast(m.name+" is not available","err");},
+      /* a card in the slot WiCAN cannot read (2026-10-25): the tile says what it
+         holds and offers the format (the page's dialog); a card that does not
+         answer is a fault, no button */
+      const sdx=m.path==="/sd"&&!mounted&&typeof sdSummary==="function"?sdSummary():null;
+      const sdBad=!!sdx&&(sdx.state==="unreadable"||sdx.state==="failed"),dead=sdBad&&sdx.state==="failed",fixable=sdBad&&!dead;
+      const card=h("div",{class:"fm-mount"+(mounted||fixable?"":" off"),role:"button",title:mounted?"Open "+m.path:fixable?"The card is not readable: format it to use it":m.name+" is not available",
+          onclick:()=>{if(mounted)go(m.path);else if(fixable)sdFormatDialog();else toast(m.name+" is not available","err");},
           onkeydown:e=>{if(e.key==="Enter"&&mounted)go(m.path);}},
         h("div",{class:"mi"},ic(m.icon)),
         h("div",{},
-          h("div",{class:"mt"},h("span",{class:"mn"},m.name),h("span",{class:"mp"},m.path),mounted?null:chip("not mounted","warn"),mounted?h("span",{class:"mo"},"Open ›"):null),
+          h("div",{class:"mt"},h("span",{class:"mn"},m.name),h("span",{class:"mp"},m.path),
+            mounted?null:sdBad?chip(dead?"not answering":"not readable",dead?"crit":"warn"):chip("not mounted","warn"),
+            mounted?h("span",{class:"mo"},"Open ›"):fixable?h("button",{class:"btn sm pri",type:"button",style:"margin-left:auto",onclick:e=>{e.stopPropagation();sdFormatDialog();}},"Format…"):null),
           h("div",{class:"md"},m.desc),
-          h("div",{class:"mu"},mounted?fmt.bytes(info.used)+" of "+fmt.bytes(info.total)+" used ("+pct.toFixed(0)+"%)":(m.path==="/sd"?"Insert an SD card, then refresh.":"Unavailable")),
+          h("div",{class:"mu"},mounted?fmt.bytes(info.used)+" of "+fmt.bytes(info.total)+" used ("+pct.toFixed(0)+"%)"
+            :dead?"The card does not answer ("+sdx.reason+"). Take it out and put it back in, or try another card."
+            :fixable?sdCardLine({name:sdx.name,capacity_bytes:sdx.capacity_bytes})+". "+(SD_FOUND[sdx.reason]||SD_FOUND.unknown)+" Format it as FAT32 to use it here: everything on it is erased."
+            :(m.path==="/sd"?"Insert an SD card, then refresh.":"Unavailable")),
           mounted?meter(info.used,info.total):null));
       card.tabIndex=0;return card;})),
       h("div",{class:"fm-hint"},"Pick a storage area. Folders you will meet: ",h("code",{},"/data/scripts")," (Scripts page), ",h("code",{},"/data/certs")," (System → Certificates), ",
